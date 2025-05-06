@@ -1,0 +1,108 @@
+# UNI Encoder的Q-LoRA微调配置
+
+student:
+  arch: uni_encoder
+  uni_version: uni2-h  # 使用UNI2-h (高性能版)，可选：'uni' 或 'uni2-h'
+  hf_token: ""  # 这里填写您的HuggingFace token，用于访问UNI模型
+  use_lora: true
+  lora_r: 16  # LoRA矩阵的秩
+  lora_alpha: 32  # LoRA缩放因子
+  lora_dropout: 0.1  # LoRA dropout率
+  lora_target_modules: attention_only  # 要应用LoRA的模块，可选：'all_linear'或'attention_only'或自定义列表
+
+teacher:
+  momentum_teacher: 0.996  # 教师动量更新参数
+  final_momentum_teacher: 0.999  # 最终教师动量参数
+  warmup_teacher_temp: 0.04  # 教师温度预热初始值
+  teacher_temp: 0.07  # 教师温度
+  warmup_teacher_temp_epochs: 30  # 教师温度预热轮数
+
+dino:
+  loss_weight: 1.0  # DINO损失权重
+  head_n_prototypes: 4096  # 原型数量
+  head_bottleneck_dim: 256  # 瓶颈维度
+  head_hidden_dim: 2048  # 隐藏层维度
+  head_nlayers: 3  # 层数
+  koleo_loss_weight: 0.0  # KoLeo损失权重，设为0禁用
+
+ibot:
+  loss_weight: 1.0  # iBOT损失权重，设为0禁用
+  head_n_prototypes: 4096  # 原型数量
+  head_bottleneck_dim: 256  # 瓶颈维度
+  head_hidden_dim: 2048  # 隐藏层维度
+  head_nlayers: 3  # 层数
+  mask_ratio_min_max: [0.1, 0.5]  # 掩码比例范围
+  mask_sample_probability: 0.5  # 掩码采样概率
+  separate_head: false  # 是否使用独立的iBOT头
+
+crops:
+  global_crops_size: 224  # 全局裁剪尺寸，UNI模型需要224x224输入
+  local_crops_size: 96  # 局部裁剪尺寸
+  local_crops_number: 8  # 局部裁剪数量
+  global_crops_scale: [0.32, 1.0]  # 全局裁剪缩放范围
+  local_crops_scale: [0.05, 0.32]  # 局部裁剪缩放范围
+
+optim:
+  epochs: 100  # 训练轮数
+  warmup_epochs: 10  # 预热轮数
+  batch_size_per_gpu: 16  # 每个GPU的批量大小
+  lr: 0.0005  # 学习率
+  min_lr: 0.00001  # 最小学习率
+  weight_decay: 0.04  # 权重衰减
+  weight_decay_end: 0.4  # 最终权重衰减
+  layerwise_decay: 1.0  # 层级衰减
+  patch_embed_lr_mult: 1.0  # patch embedding学习率倍数
+  freeze_last_layer_epochs: 1  # 冻结最后一层的轮数
+  clip_grad: 3.0  # 梯度裁剪值，设为0禁用
+
+train:
+  output_dir: "/path/to/output"  # 输出目录
+  dataset_path: "/path/to/dataset"  # 数据集路径
+  OFFICIAL_EPOCH_LENGTH: 2000  # 每个官方epoch的迭代次数
+  batch_size_per_gpu: 16  # 每个GPU的批量大小
+  num_workers: 10  # 数据加载器工作线程数
+  centering: "centering"  # 居中方法，可选："centering"或"sinkhorn_knopp"
+
+evaluation:
+  eval_period_iterations: 5000  # 评估周期的迭代次数
+
+compute_precision:
+  grad_scaler: true  # 是否使用梯度缩放
+  student:
+    backbone:
+      sharding_strategy: "FULL_SHARD"  # 分片策略
+      mixed_precision:
+        param_dtype: "fp16"  # 参数数据类型
+        reduce_dtype: "fp16"  # 梯度规约数据类型
+        buffer_dtype: "fp16"  # 缓冲区数据类型
+    dino_head:
+      sharding_strategy: "FULL_SHARD"
+      mixed_precision:
+        param_dtype: "fp16"
+        reduce_dtype: "fp16"
+        buffer_dtype: "fp16"
+    ibot_head:
+      sharding_strategy: "FULL_SHARD"
+      mixed_precision:
+        param_dtype: "fp16"
+        reduce_dtype: "fp16"
+        buffer_dtype: "fp16"
+  teacher:
+    backbone:
+      sharding_strategy: "FULL_SHARD"
+      mixed_precision:
+        param_dtype: "fp16"
+        reduce_dtype: "fp16"
+        buffer_dtype: "fp16"
+    dino_head:
+      sharding_strategy: "FULL_SHARD"
+      mixed_precision:
+        param_dtype: "fp16"
+        reduce_dtype: "fp16"
+        buffer_dtype: "fp16"
+    ibot_head:
+      sharding_strategy: "FULL_SHARD"
+      mixed_precision:
+        param_dtype: "fp16"
+        reduce_dtype: "fp16"
+        buffer_dtype: "fp16"

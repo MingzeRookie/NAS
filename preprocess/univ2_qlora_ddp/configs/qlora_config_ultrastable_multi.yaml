@@ -1,0 +1,119 @@
+MODEL:
+  WEIGHTS: ''
+compute_precision:
+  grad_scaler: true  # 保持开启，有助于浮点稳定性
+  teacher:
+    backbone:
+      sharding_strategy: NO_SHARD
+      mixed_precision:
+        param_dtype: fp16
+        reduce_dtype: fp16
+        buffer_dtype: fp32
+    dino_head:
+      sharding_strategy: NO_SHARD
+      mixed_precision:
+        param_dtype: fp16
+        reduce_dtype: fp16
+        buffer_dtype: fp32
+  student:
+    backbone:
+      sharding_strategy: NO_SHARD
+      mixed_precision:
+        param_dtype: fp16
+        reduce_dtype: fp16
+        buffer_dtype: fp32
+    dino_head:
+      sharding_strategy: NO_SHARD
+      mixed_precision:
+        param_dtype: fp16
+        reduce_dtype: fp32
+        buffer_dtype: fp32
+dino:
+  loss_weight: 1.0
+  head_n_prototypes: 65536
+  head_bottleneck_dim: 256
+  head_nlayers: 3
+  head_hidden_dim: 2048
+  koleo_loss_weight: 0.01  # 大幅降低，从0.1降到0.001
+ibot:
+  loss_weight: 0.0  # 关闭ibot损失，专注于DINO
+  mask_sample_probability: 0.0
+  mask_ratio_min_max:
+  - 0.0
+  - 0.0
+  separate_head: false
+lora:
+  enabled: true
+  r: 4           # 降低LoRA秩，从16到8，减少参数量
+  alpha: 8      # 降低LoRA放大因子，从32到16
+  dropout: 0.1    # 增加Dropout，从0.05到0.1
+  target_modules: ['q', 'k', 'v', 'proj']
+  bias: 'none'
+quantization:
+  enabled: true
+  bits: 4
+  group_size: 128
+  double_quant: true
+train:
+  batch_size_per_gpu: 4  # 提高每个GPU的批次大小，从2提高到8
+  dataset_path: '/remote-home/share/lisj/Workspace/SOTA_NAS/datasets/core/patches'
+  output_dir: './output/univ2_qlora_multi_gpu'
+  saveckp_freq: 2  # 更频繁保存检查点
+  seed: 42
+  num_workers: 4
+  OFFICIAL_EPOCH_LENGTH: 1250
+  centering: "sinkhorn_knopp"
+  cache_dataset: true
+  dataset_cache_path: '/remote-home/share/lisj/Workspace/SOTA_NAS/preprocess/univ2_qlora/output/univ2_qlora/dataset_cache.pt'
+student:
+  arch: 'vit_giant_patch14_224'
+  patch_size: 14
+  drop_path_rate: 0.2  # 增加dropout，从0到0.2
+  layerscale: 1.0e-05
+  drop_path_uniform: true
+  pretrained_weights: '/remote-home/share/lisj/Workspace/SOTA_NAS/encoder/uni_2/pytorch_model.bin'
+  ffn_layer: "swiglu"
+  block_chunks: 0
+  qkv_bias: true
+  proj_bias: true
+  ffn_bias: true
+  num_register_tokens: 8
+  interpolate_antialias: false
+  interpolate_offset: 0.1
+  embed_dim: 1536
+  depth: 24
+  num_heads: 24
+  mlp_ratio: 5.33334
+teacher:
+  momentum_teacher: 0.9    # 稍微降低初始动量
+  final_momentum_teacher: 0.999  # 保持较低的最终值
+  warmup_teacher_temp: 0.1
+  teacher_temp: 0.2
+  warmup_teacher_temp_epochs: 30
+optim:
+  epochs: 25           # 减少轮数，从100到25
+  weight_decay: 0.05   # 增加权重衰减，从0.04到0.05
+  weight_decay_end: 0.05  # 保持不变
+  base_lr: 0.001      # 降低初始学习率
+  lr: 0.               # 由缩放规则设置
+  warmup_epochs: 10    # 延长预热
+  min_lr: 0.0001     # 保持合理的最小值
+  clip_grad: 1.0      # 大幅降低梯度裁剪阈值，从3.0到0.5
+  freeze_last_layer_epochs: 0  # 取消冻结最后一层
+  scaling_rule: sqrt_wrt_1024
+  patch_embed_lr_mult: 0.1   # 降低patch嵌入学习率，从0.2到0.1
+  layerwise_decay: 0.95      # 增加衰减率，从0.9到0.95
+  adamw_beta1: 0.9
+  adamw_beta2: 0.999
+crops:
+  global_crops_scale:
+  - 0.5               # 调整裁剪比例，从0.32到0.5
+  - 1.0
+  local_crops_number: 2     # 减少本地裁剪数量，从8到4
+  local_crops_scale:
+  - 0.1
+  - 0.4
+  global_crops_size: 224
+  local_crops_size: 98
+evaluation:
+  eval_period_iterations: 2500

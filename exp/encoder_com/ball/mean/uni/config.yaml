@@ -1,0 +1,21 @@
+datasetname: NASH
+num_class: 3
+
+random_seed: 7777
+output: exp/encoder_com/ball/mean/uni/
+
+model:
+  name: mean
+  feats_dim: 384
+
+optimizer:
+  lr: 2e-4
+  epoch: 100
+dataset:
+  target: ballooning
+  k_fold: 5
+  root_dir: datasets/UNI-feature
+  label_dir: datasets/labels.csv
+  random: 7777
+  bs: 1
+  file_suffix: .csv # the "."

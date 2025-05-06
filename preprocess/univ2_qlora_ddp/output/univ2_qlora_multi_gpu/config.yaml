@@ -1,0 +1,123 @@
+MODEL:
+  WEIGHTS: ''
+compute_precision:
+  grad_scaler: true
+  teacher:
+    backbone:
+      sharding_strategy: NO_SHARD
+      mixed_precision:
+        param_dtype: fp16
+        reduce_dtype: fp16
+        buffer_dtype: fp32
+    dino_head:
+      sharding_strategy: NO_SHARD
+      mixed_precision:
+        param_dtype: fp16
+        reduce_dtype: fp16
+        buffer_dtype: fp32
+  student:
+    backbone:
+      sharding_strategy: NO_SHARD
+      mixed_precision:
+        param_dtype: fp16
+        reduce_dtype: fp16
+        buffer_dtype: fp32
+    dino_head:
+      sharding_strategy: NO_SHARD
+      mixed_precision:
+        param_dtype: fp16
+        reduce_dtype: fp32
+        buffer_dtype: fp32
+dino:
+  loss_weight: 1.0
+  head_n_prototypes: 65536
+  head_bottleneck_dim: 256
+  head_nlayers: 3
+  head_hidden_dim: 2048
+  koleo_loss_weight: 0.01
+ibot:
+  loss_weight: 0.0
+  mask_sample_probability: 0.0
+  mask_ratio_min_max:
+  - 0.0
+  - 0.0
+  separate_head: false
+lora:
+  enabled: true
+  r: 4
+  alpha: 8
+  dropout: 0.1
+  target_modules:
+  - q
+  - k
+  - v
+  - proj
+  bias: none
+quantization:
+  enabled: true
+  bits: 4
+  group_size: 128
+  double_quant: true
+train:
+  batch_size_per_gpu: 4
+  dataset_path: /remote-home/share/lisj/Workspace/SOTA_NAS/datasets/core/patches
+  output_dir: ./output/univ2_qlora_multi_gpu
+  saveckp_freq: 2
+  seed: 42
+  num_workers: 4
+  OFFICIAL_EPOCH_LENGTH: 1250
+  centering: sinkhorn_knopp
+  cache_dataset: true
+  dataset_cache_path: /remote-home/share/lisj/Workspace/SOTA_NAS/preprocess/univ2_qlora/output/univ2_qlora/dataset_cache.pt
+student:
+  arch: vit_giant_patch14_224
+  patch_size: 14
+  drop_path_rate: 0.2
+  layerscale: 1.0e-05
+  drop_path_uniform: true
+  pretrained_weights: /remote-home/share/lisj/Workspace/SOTA_NAS/encoder/uni_2/pytorch_model.bin
+  ffn_layer: swiglu
+  block_chunks: 0
+  qkv_bias: true
+  proj_bias: true
+  ffn_bias: true
+  num_register_tokens: 8
+  interpolate_antialias: false
+  interpolate_offset: 0.1
+  embed_dim: 1536
+  depth: 24
+  num_heads: 24
+  mlp_ratio: 5.33334
+teacher:
+  momentum_teacher: 0.9
+  final_momentum_teacher: 0.999
+  warmup_teacher_temp: 0.1
+  teacher_temp: 0.2
+  warmup_teacher_temp_epochs: 30
+optim:
+  epochs: 25
+  weight_decay: 0.05
+  weight_decay_end: 0.05
+  base_lr: 0.0001
+  lr: 0.0
+  warmup_epochs: 10
+  min_lr: 5.0e-05
+  clip_grad: 1.0
+  freeze_last_layer_epochs: 0
+  scaling_rule: sqrt_wrt_1024
+  patch_embed_lr_mult: 0.1
+  layerwise_decay: 0.95
+  adamw_beta1: 0.9
+  adamw_beta2: 0.999
+crops:
+  global_crops_scale:
+  - 0.5
+  - 1.0
+  local_crops_number: 2
+  local_crops_scale:
+  - 0.1
+  - 0.4
+  global_crops_size: 224
+  local_crops_size: 98
+evaluation:
+  eval_period_iterations: 1250

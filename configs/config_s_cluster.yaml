@@ -1,0 +1,27 @@
+datasetname: NASH
+num_class: 4
+
+random_seed: 7777
+output: runs
+
+model:
+  var_scaling: 1
+  cutp_scale: 5
+  train_cutpoints: True
+  train_var_scaling: False
+  milnet: abmil
+  input_dim: 384
+
+optimizer:
+  # orloss: False
+  lr: 2e-4
+  epoch: 80
+dataset:
+  target: steatosis
+  k_fold: 5
+  cluster_size: 64
+  root_dir: datasets/UNI-feature
+  label_dir: datasets/labels.csv
+  random: 7777
+  bs: 1
+  file_suffix: .csv # the "."
