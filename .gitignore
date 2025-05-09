@@ -24,7 +24,6 @@ submitit
 wandb/
 runs/
 results-comparisons/
-src/
 checkpoints
 scripts/
 GroundingDINO/
