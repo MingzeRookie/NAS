@@ -1,3 +1,5 @@
+# src/models/multimodal_text_guided_mil.py
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,87 +9,35 @@ import unittest # 引入 unittest 模块，提供更结构化的测试
 # 尝试从当前目录或定义的路径导入您的真实模块
 # 您需要确保这些导入路径相对于您的项目结构是正确的
 # 并且这些类 (SelfAttentionLayer, CrossAttentionLayer, AttentionMIL) 存在且接口兼容
+# 在 multimodal_text_guided_mil.py 文件顶部
+REAL_MODULES_LOADED = False
 try:
-    # 如果此脚本与 attention_layers.py 和 mil_aggregators.py 在同一目录下 (BMW/src/models/)
     from .attention_layers import SelfAttentionLayer, CrossAttentionLayer
     from .mil_aggregators import AttentionMIL 
-    print("成功从 .attention_layers 和 .mil_aggregators 导入自定义模块。")
-except ImportError as e:
-    print(f"警告: 尝试相对导入失败: {e}")
+    print("步骤 1/2 成功: 尝试相对导入真实模块成功。")
+    REAL_MODULES_LOADED = True
+except ImportError as e_rel:
+    print(f"步骤 1/2 失败: 相对导入失败: {e_rel}。尝试绝对导入...")
     try:
-        # 备用方案：如果您的项目结构允许直接从 BMW.src.models 导入
-        # (这通常需要您的项目根目录在 PYTHONPATH 中，或者您从根目录运行特定命令)
         from BMW.src.models.attention_layers import SelfAttentionLayer, CrossAttentionLayer
         from BMW.src.models.mil_aggregators import AttentionMIL
-        print("成功从 BMW.src.models 导入自定义模块。")
-    except ImportError as e2:
-        print(f"警告: 尝试从 BMW.src.models 导入也失败: {e2}。将使用占位符模块。")
-        # --- 占位符模块 (如果导入失败) ---
-        class SelfAttentionLayer(nn.Module): 
-            def __init__(self, feature_dim, num_heads=4, dropout=0.1):
-                super().__init__()
-                self.norm = nn.LayerNorm(feature_dim)
-                self.attn = nn.MultiheadAttention(feature_dim, num_heads, dropout=dropout, batch_first=True)
-                print(f"占位符 SelfAttentionLayer 初始化，维度 {feature_dim}")
-            def forward(self, x, mask=None): # x: (batch, seq_len, dim), mask: (batch, seq_len) True to MASK
-                x_norm = self.norm(x)
-                # nn.MultiheadAttention returns (attn_output, attn_output_weights)
-                attn_output, _attn_weights = self.attn(x_norm, x_norm, x_norm, key_padding_mask=mask)
-                return attn_output # 真实模块可能返回 attn_output, _attn_weights
+        print("步骤 2/2 成功: 尝试绝对导入真实模块成功。")
+        REAL_MODULES_LOADED = True
+    except ImportError as e_abs:
+        print(f"步骤 2/2 失败: 绝对导入也失败: {e_abs}。")
+        # 直接抛出异常，强制解决导入问题，而不是使用占位符
+        raise ImportError(
+            "关键自定义模块未能加载。请检查 PYTHONPATH、__init__.py 文件以及运行命令的方式。\n"
+            f"相对导入错误: {e_rel}\n绝对导入错误: {e_abs}"
+        )
 
-        class CrossAttentionLayer(nn.Module): 
-            def __init__(self, query_dim, key_dim, num_heads=4, dropout=0.1):
-                super().__init__()
-                self.q_norm = nn.LayerNorm(query_dim)
-                self.kv_norm = nn.LayerNorm(key_dim)
-                self.proj_k = nn.Linear(key_dim, query_dim) if key_dim != query_dim else nn.Identity()
-                self.proj_v = nn.Linear(key_dim, query_dim) if key_dim != query_dim else nn.Identity()
-                self.attn = nn.MultiheadAttention(query_dim, num_heads, dropout=dropout, batch_first=True)
-                print(f"占位符 CrossAttentionLayer 初始化，查询维度 {query_dim}, 键/值维度 {key_dim}")
-            def forward(self, query, key_value, kv_mask=None): # query: (B, Nq, Dq), key_value: (B, Nkv, Dkv)
-                query_norm = self.q_norm(query)
-                kv_norm = self.kv_norm(key_value)
-                k = self.proj_k(kv_norm)
-                v = self.proj_v(kv_norm)
-                # nn.MultiheadAttention returns (attn_output, attn_output_weights)
-                attn_output, _attn_weights = self.attn(query_norm, k, v, key_padding_mask=kv_mask)
-                return attn_output # 真实模块可能返回 attn_output, _attn_weights
+if not REAL_MODULES_LOADED:
+    # 这段代码理论上不应该被执行，如果上面 raise ImportError
+    # 但作为最后的保险，如果逻辑意外到达这里，也应该报错
+    raise RuntimeError("真实模块加载状态不一致，未能成功加载真实模块。")
 
-        class AttentionMIL(nn.Module): 
-            def __init__(self, input_dim, hidden_dim_att, output_dim_att=1, dropout_att=0.25, output_dim=None):
-                super().__init__()
-                self.input_dim = input_dim
-                self.output_dim = output_dim if output_dim is not None else input_dim
-                self.attention_V = nn.Sequential(nn.Linear(input_dim, hidden_dim_att), nn.Tanh())
-                self.attention_U = nn.Sequential(nn.Linear(input_dim, hidden_dim_att), nn.Sigmoid())
-                self.attention_weights = nn.Linear(hidden_dim_att, output_dim_att) # K
-                # 如果需要改变最终输出特征的维度，并且 K=1
-                if self.input_dim != self.output_dim and output_dim_att == 1:
-                    self.feature_transform = nn.Linear(self.input_dim, self.output_dim)
-                else: # 如果 K > 1 或者 input_dim == output_dim, 则不直接变换或需要更复杂的变换逻辑
-                    self.feature_transform = nn.Identity() 
-                print(f"占位符 AttentionMIL 初始化，输入维度 {input_dim}, 输出维度 {self.output_dim}")
-
-            def forward(self, x, instance_mask=None): # x: (B, N, D_in), instance_mask: (B, N) True for VALID
-                A_V = self.attention_V(x)
-                A_U = self.attention_U(x)
-                att_raw = self.attention_weights(A_V * A_U) # (B, N, K)
-                
-                if instance_mask is not None:
-                    # instance_mask: True for valid. We want to set weights of PADDED (False) elements to -inf
-                    att_raw.masked_fill_(~instance_mask.bool().unsqueeze(-1).expand_as(att_raw), float('-inf'))
-
-                att_scores = F.softmax(att_raw, dim=1) # (B, N, K)
-                M = torch.bmm(att_scores.transpose(1, 2), x) # (B, K, D_in)
-                
-                if M.size(1) == 1: # K=1
-                    M = M.squeeze(1) # (B, D_in)
-                    M = self.feature_transform(M) # (B, D_out)
-                else: # K > 1
-                    # 如果需要变换维度，这里可能需要 M.view(B, K*D_in) 然后再变换，或者其他处理
-                    # 为简单起见，如果 K > 1 且需要变换维度，占位符的 feature_transform 可能不完全符合预期
-                    M = self.feature_transform(M) if self.input_dim == self.output_dim else M 
-                return M, att_scores
+print("确认：将使用已导入的真实模块。后续不应出现'占位符...初始化'信息。")
+# 不再定义占位符类 SelfAttentionLayer, CrossAttentionLayer, AttentionMIL
 
 
 class MultimodalTextGuidedMIL(nn.Module):
@@ -111,8 +61,8 @@ class MultimodalTextGuidedMIL(nn.Module):
         if self.pre_similarity_window_agg_type == 'attention_light':
             self.light_window_aggregator = AttentionMIL(
                 input_dim=self.patch_feature_dim,
-                hidden_dim_att=config.model_params.window_params.light_agg_D,
-                dropout_att=config.model_params.window_params.light_agg_dropout,
+                hidden_dim=config.model_params.window_params.light_agg_D,
+                dropout_rate=config.model_params.window_params.light_agg_dropout,
                 output_dim=self.patch_feature_dim # 输出维度与输入一致，方便后续投影
             )
         elif self.pre_similarity_window_agg_type == 'mean':
@@ -123,22 +73,22 @@ class MultimodalTextGuidedMIL(nn.Module):
             raise ValueError(f"不支持的 pre_similarity_window_agg_type: {self.pre_similarity_window_agg_type}")
 
         self.window_self_attention = SelfAttentionLayer(
-            feature_dim=self.patch_feature_dim,
+            embed_dim=self.patch_feature_dim,
             num_heads=config.model_params.self_attn_heads,
             dropout=config.model_params.self_attn_dropout
         )
         self.window_mil_output_dim = config.model_params.window_mil_output_dim
         self.window_mil_aggregator = AttentionMIL(
             input_dim=self.patch_feature_dim,
-            hidden_dim_att=config.model_params.window_mil_D,
-            dropout_att=config.model_params.window_mil_dropout,
+            hidden_dim=config.model_params.window_mil_D,
+            dropout_rate=config.model_params.window_mil_dropout,
             output_dim=self.window_mil_output_dim
         )
         self.final_image_feature_dim = config.model_params.final_image_feature_dim
         self.inter_window_aggregator = AttentionMIL(
             input_dim=self.window_mil_output_dim,
-            hidden_dim_att=config.model_params.inter_window_mil_D,
-            dropout_att=config.model_params.inter_window_mil_dropout,
+            hidden_dim=config.model_params.inter_window_mil_D,
+            dropout_rate=config.model_params.inter_window_mil_dropout,
             output_dim=self.final_image_feature_dim
         )
         self.cross_attention_output_dim = self.final_image_feature_dim # CrossAttn 输出通常与Query维度一致
@@ -304,8 +254,8 @@ class MultimodalTextGuidedMIL(nn.Module):
 
         attended_patch_feats = self.window_self_attention(
             proc_windows_feats,
-            mask=~proc_windows_mask.bool() if proc_windows_mask is not None else None 
-        ) 
+            key_padding_mask=~proc_windows_mask.bool() if proc_windows_mask is not None else None 
+        )
         
         aggregated_window_reprs, _ = self.window_mil_aggregator(
             attended_patch_feats,
