@@ -12,10 +12,7 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 import time
-# import wandb # <--- 1. 暂时注释掉 wandb 导入
-
-# 修改导入路径以适应从 BMW/ 目录直接运行 train.py
-# 假设 train.py 与 src/ 目录同级 (都在 BMW/ 下)
+import wandb 
 try:
     from src.datasets.wsi_multimodal_spatial_dataset import WsiMultimodalSpatialDataset
     from src.models.multimodal_text_guided_mil import MultimodalTextGuidedMIL
