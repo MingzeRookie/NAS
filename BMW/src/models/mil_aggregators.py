@@ -15,6 +15,7 @@ class AttentionMIL(nn.Module):
 
         self.attention_V = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
             nn.Tanh()
         )
         self.attention_U = nn.Sequential(
@@ -99,7 +100,10 @@ class MILAttentionAggregator(nn.Module):
         self.attention_fc = nn.Linear(feature_dim, 1)
         if self.use_gate:
             # Assuming gate_fc also operates on feature_dim and outputs feature_dim for element-wise product
-            self.gate_fc = nn.Linear(feature_dim, feature_dim)
+            self.gate_fc = nn.Sequential(
+                nn.Linear(feature_dim, feature_dim),
+                nn.LayerNorm(feature_dim)
+            )
 
     def forward(
         self,
