@@ -25,24 +25,24 @@ model_params:
     num_selected_windows: 5
     pre_similarity_window_agg_type: 'mean' # 'mean', 'max', or 'attention_light'
     light_agg_D: 128
-    light_agg_dropout: 0.1
+    light_agg_dropout: 0.3
   self_attn_heads: 4
   self_attn_dropout: 0.1
   window_mil_output_dim: 512
   window_mil_D: 128           # 对应 AttentionMIL 的 hidden_dim
-  window_mil_dropout: 0.25    # 对应 AttentionMIL 的 dropout_rate
+  window_mil_dropout: 0.3    # 对应 AttentionMIL 的 dropout_rate
   final_image_feature_dim: 512
   inter_window_mil_D: 128     # 对应 AttentionMIL 的 hidden_dim
-  inter_window_mil_dropout: 0.25 # 对应 AttentionMIL 的 dropout_rate
+  inter_window_mil_dropout: 0.4 # 对应 AttentionMIL 的 dropout_rate
   cross_attn_heads: 4
   cross_attn_dropout: 0.1
   classifier_hidden_dim: 256
-  classifier_dropout: 0.25
+  classifier_dropout: 0.3
 
 train_params:
   optimizer: "AdamW"
-  learning_rate: 0.0001
-  weight_decay: 0.00001
+  learning_rate: 0.00002
+  weight_decay: 0.0001
   batch_size: 8 # 根据您的 GPU 显存调整
   num_epochs: 50
   warmup_epochs: 5 # 如果使用 CosineAnnealingLR
