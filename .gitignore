@@ -29,6 +29,7 @@ scripts/
 GroundingDINO/
 recognize-anything/
 Grounded-Segment-Anything/
+dinov2-main/
 
 # some debugging codes
 debug.ipynb
