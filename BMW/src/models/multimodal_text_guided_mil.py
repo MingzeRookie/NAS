@@ -66,7 +66,7 @@ class MultimodalTextGuidedMIL(nn.Module):
         super().__init__()
         self.config = config
         self.patch_feature_dim = config.patch_feature_dim
-        self.text_feature_dim = config.text_feature_dim
+        #self.text_feature_dim = config.text_feature_dim
         self.num_classes = config.num_classes
         self.window_patch_rows = config.model_params.window_params.patch_rows
         self.window_patch_cols = config.model_params.window_params.patch_cols
@@ -75,10 +75,10 @@ class MultimodalTextGuidedMIL(nn.Module):
         self.stride_cols = config.model_params.window_params.stride_cols
         self.num_selected_windows = config.model_params.window_params.num_selected_windows
         self.pre_similarity_window_agg_type = config.model_params.window_params.pre_similarity_window_agg_type
-        self.similarity_projection_dim = config.model_params.similarity_projection_dim
+        # self.similarity_projection_dim = config.model_params.similarity_projection_dim
         
-        self.text_proj_sim = nn.Linear(self.text_feature_dim, self.similarity_projection_dim)
-        self.patch_proj_sim = nn.Linear(self.patch_feature_dim, self.similarity_projection_dim)
+        # self.text_proj_sim = nn.Linear(self.text_feature_dim, self.similarity_projection_dim)
+        # self.patch_proj_sim = nn.Linear(self.patch_feature_dim, self.similarity_projection_dim)
 
         if self.pre_similarity_window_agg_type == 'attention_light':
             self.light_window_aggregator = AttentionMIL( 
@@ -110,7 +110,8 @@ class MultimodalTextGuidedMIL(nn.Module):
         elif self.pre_similarity_window_agg_type == 'max':
              self.light_window_aggregator = lambda x, mask: x.masked_fill(~mask.unsqueeze(-1).bool(), -1e9).max(dim=1)[0] if mask is not None and mask.any() else x.max(dim=1)[0]
         else:
-            raise ValueError(f"不支持的 pre_similarity_window_agg_type: {self.pre_similarity_window_agg_type}")
+            # raise ValueError(f"不支持的 pre_similarity_window_agg_type: {self.pre_similarity_window_agg_type}")
+            pass
 
         self.window_self_attention = SelfAttentionLayer(
             embed_dim=self.patch_feature_dim, 
@@ -134,16 +135,17 @@ class MultimodalTextGuidedMIL(nn.Module):
             output_dim=self.final_image_feature_dim
         )
         
-        self.cross_attention_output_dim = self.final_image_feature_dim 
-        self.cross_attention = CrossAttentionLayer( 
-            query_dim=self.final_image_feature_dim,
-            key_dim=self.text_feature_dim,
-            embed_dim=self.final_image_feature_dim, 
-            num_heads=config.model_params.cross_attn_heads,
-            dropout=config.model_params.cross_attn_dropout
-        )
+        # self.cross_attention_output_dim = self.final_image_feature_dim 
+        # self.cross_attention = CrossAttentionLayer( 
+        #     query_dim=self.final_image_feature_dim,
+        #     key_dim=self.text_feature_dim,
+        #     embed_dim=self.final_image_feature_dim, 
+        #     num_heads=config.model_params.cross_attn_heads,
+        #     dropout=config.model_params.cross_attn_dropout
+        # )
         
-        self.fused_feature_dim = self.final_image_feature_dim + self.cross_attention_output_dim
+        # self.fused_feature_dim = self.final_image_feature_dim + self.cross_attention_output_dim
+        self.fused_feature_dim = self.final_image_feature_dim # 现在只有图像特征
         self.classifier = nn.Sequential(
             nn.Linear(self.fused_feature_dim, config.model_params.classifier_hidden_dim),
             nn.ReLU(),
@@ -218,94 +220,126 @@ class MultimodalTextGuidedMIL(nn.Module):
         if not candidate_windows_feats_list:
             return return_zeros_for_select()
 
-        aggregated_candidate_reprs = []
-        valid_candidate_indices = [] 
-        for i, window_feats in enumerate(candidate_windows_feats_list):
-            window_mask = candidate_windows_masks_list[i]
-            if not window_mask.any(): continue
-            
-            if check_tensor_nan_inf(window_feats, f"window_feats to light_agg (candidate {i})", batch_item_idx_for_debug): continue
-            current_window_feats_unsqueezed = window_feats.unsqueeze(0)
-            current_mask_unsqueezed = window_mask.unsqueeze(0)
+        # --- 新的窗口选择逻辑 (示例：随机选择) ---
+        num_candidates = len(candidate_windows_feats_list)
+        num_to_select = min(self.num_selected_windows, num_candidates)
 
-            if self.pre_similarity_window_agg_type == 'attention_light':
-                agg_repr_tuple = self.light_window_aggregator(current_window_feats_unsqueezed, instance_mask=current_mask_unsqueezed)
-                agg_repr = agg_repr_tuple[0] 
-            else: 
-                agg_repr = self.light_window_aggregator(current_window_feats_unsqueezed, current_mask_unsqueezed)
-            
-            if check_tensor_nan_inf(agg_repr, f"agg_repr from light_agg (candidate {i})", batch_item_idx_for_debug): continue
-            aggregated_candidate_reprs.append(agg_repr.squeeze(0))
-            valid_candidate_indices.append(i)
-
-        if not aggregated_candidate_reprs:
-             return return_zeros_for_select()
-
-        stacked_candidate_reprs = torch.stack(aggregated_candidate_reprs)
-        if check_tensor_nan_inf(stacked_candidate_reprs, "stacked_candidate_reprs", batch_item_idx_for_debug): return return_zeros_for_select()
-
-        proj_text_feat = self.text_proj_sim(text_feat_wsi)
-        if check_tensor_nan_inf(proj_text_feat, "proj_text_feat", batch_item_idx_for_debug): return return_zeros_for_select()
-        
-        proj_candidate_reprs = self.patch_proj_sim(stacked_candidate_reprs)
-        if check_tensor_nan_inf(proj_candidate_reprs, "proj_candidate_reprs", batch_item_idx_for_debug): return return_zeros_for_select()
-
-        text_norm = torch.linalg.norm(proj_text_feat.unsqueeze(0), dim=-1) 
-        candidate_norms = torch.linalg.norm(proj_candidate_reprs, dim=-1)
-        if torch.any(text_norm < 1e-7): 
-            print(f"WARNING_NaN_CHECK: proj_text_feat norm is very small: {text_norm.item()} for batch item {batch_item_idx_for_debug}")
-        if torch.any(candidate_norms < 1e-7):
-            small_norms_indices = (candidate_norms < 1e-7).nonzero(as_tuple=True)[0]
-            print(f"WARNING_NaN_CHECK: {small_norms_indices.size(0)} proj_candidate_reprs norms are very small for batch item {batch_item_idx_for_debug} at indices {small_norms_indices.tolist()}. Smallest: {candidate_norms.min().item() if candidate_norms.numel() > 0 else 'N/A'}")
-            # proj_candidate_reprs[small_norms_indices] = torch.rand_like(proj_candidate_reprs[small_norms_indices]) * 1e-6 # Add small random noise if norms are zero
-
-        similarity_scores = F.cosine_similarity(proj_text_feat.unsqueeze(0), proj_candidate_reprs, dim=1)
-        if check_tensor_nan_inf(similarity_scores, "similarity_scores", batch_item_idx_for_debug): 
-            # print(f"  proj_text_feat for NaN scores: {proj_text_feat}")
-            # print(f"  proj_candidate_reprs for NaN scores (first few): {proj_candidate_reprs[:min(3, proj_candidate_reprs.shape[0])]}")
-            return return_zeros_for_select()
-        
-        num_valid_candidates = similarity_scores.shape[0]
-        num_to_select = min(self.num_selected_windows, num_valid_candidates)
-        
         final_selected_feats_list = []
         final_selected_masks_list = []
 
         if num_to_select > 0:
-            if not (torch.isnan(similarity_scores).any() or torch.isinf(similarity_scores).any()):
-                _, top_k_relative_indices = torch.topk(similarity_scores, k=num_to_select, dim=0)
-                top_k_absolute_indices = [valid_candidate_indices[i] for i in top_k_relative_indices.tolist()]
-                for idx in top_k_absolute_indices:
-                    final_selected_feats_list.append(candidate_windows_feats_list[idx])
-                    final_selected_masks_list.append(candidate_windows_masks_list[idx])
+            # 如果候选数量少于或等于需要选择的数量，则全部选择
+            if num_candidates <= num_to_select:
+                selected_indices = list(range(num_candidates))
+            else: #否则随机选择
+                selected_indices = random.sample(range(num_candidates), num_to_select)
+
+            for idx in selected_indices:
+                final_selected_feats_list.append(candidate_windows_feats_list[idx])
+                final_selected_masks_list.append(candidate_windows_masks_list[idx])
+        # --- 结束新的窗口选择逻辑 ---
+
+        # aggregated_candidate_reprs = []
+        # valid_candidate_indices = [] 
+        # for i, window_feats in enumerate(candidate_windows_feats_list):
+        #     window_mask = candidate_windows_masks_list[i]
+        #     if not window_mask.any(): continue
+            
+        #     if check_tensor_nan_inf(window_feats, f"window_feats to light_agg (candidate {i})", batch_item_idx_for_debug): continue
+        #     current_window_feats_unsqueezed = window_feats.unsqueeze(0)
+        #     current_mask_unsqueezed = window_mask.unsqueeze(0)
+
+        #     if self.pre_similarity_window_agg_type == 'attention_light':
+        #         agg_repr_tuple = self.light_window_aggregator(current_window_feats_unsqueezed, instance_mask=current_mask_unsqueezed)
+        #         agg_repr = agg_repr_tuple[0] 
+        #     else: 
+        #         agg_repr = self.light_window_aggregator(current_window_feats_unsqueezed, current_mask_unsqueezed)
+            
+        #     if check_tensor_nan_inf(agg_repr, f"agg_repr from light_agg (candidate {i})", batch_item_idx_for_debug): continue
+        #     aggregated_candidate_reprs.append(agg_repr.squeeze(0))
+        #     valid_candidate_indices.append(i)
+
+        # if not aggregated_candidate_reprs:
+        #      return return_zeros_for_select()
+
+        # stacked_candidate_reprs = torch.stack(aggregated_candidate_reprs)
+        # if check_tensor_nan_inf(stacked_candidate_reprs, "stacked_candidate_reprs", batch_item_idx_for_debug): return return_zeros_for_select()
+
+        # proj_text_feat = self.text_proj_sim(text_feat_wsi)
+        # if check_tensor_nan_inf(proj_text_feat, "proj_text_feat", batch_item_idx_for_debug): return return_zeros_for_select()
+        
+        # proj_candidate_reprs = self.patch_proj_sim(stacked_candidate_reprs)
+        # if check_tensor_nan_inf(proj_candidate_reprs, "proj_candidate_reprs", batch_item_idx_for_debug): return return_zeros_for_select()
+
+        # text_norm = torch.linalg.norm(proj_text_feat.unsqueeze(0), dim=-1) 
+        # candidate_norms = torch.linalg.norm(proj_candidate_reprs, dim=-1)
+        # if torch.any(text_norm < 1e-7): 
+        #     print(f"WARNING_NaN_CHECK: proj_text_feat norm is very small: {text_norm.item()} for batch item {batch_item_idx_for_debug}")
+        # if torch.any(candidate_norms < 1e-7):
+        #     small_norms_indices = (candidate_norms < 1e-7).nonzero(as_tuple=True)[0]
+        #     print(f"WARNING_NaN_CHECK: {small_norms_indices.size(0)} proj_candidate_reprs norms are very small for batch item {batch_item_idx_for_debug} at indices {small_norms_indices.tolist()}. Smallest: {candidate_norms.min().item() if candidate_norms.numel() > 0 else 'N/A'}")
+        #     # proj_candidate_reprs[small_norms_indices] = torch.rand_like(proj_candidate_reprs[small_norms_indices]) * 1e-6 # Add small random noise if norms are zero
+
+        # similarity_scores = F.cosine_similarity(proj_text_feat.unsqueeze(0), proj_candidate_reprs, dim=1)
+        # if check_tensor_nan_inf(similarity_scores, "similarity_scores", batch_item_idx_for_debug): 
+        #     # print(f"  proj_text_feat for NaN scores: {proj_text_feat}")
+        #     # print(f"  proj_candidate_reprs for NaN scores (first few): {proj_candidate_reprs[:min(3, proj_candidate_reprs.shape[0])]}")
+        #     return return_zeros_for_select()
+        
+        # num_valid_candidates = similarity_scores.shape[0]
+        # num_to_select = min(self.num_selected_windows, num_valid_candidates)
+        
+        # final_selected_feats_list = []
+        # final_selected_masks_list = []
+
+        # if num_to_select > 0:
+        #     if not (torch.isnan(similarity_scores).any() or torch.isinf(similarity_scores).any()):
+        #         _, top_k_relative_indices = torch.topk(similarity_scores, k=num_to_select, dim=0)
+        #         top_k_absolute_indices = [valid_candidate_indices[i] for i in top_k_relative_indices.tolist()]
+        #         for idx in top_k_absolute_indices:
+        #             final_selected_feats_list.append(candidate_windows_feats_list[idx])
+        #             final_selected_masks_list.append(candidate_windows_masks_list[idx])
 
         if final_selected_feats_list:
             padded_selected_feats = torch.stack(final_selected_feats_list, dim=0)
             padded_selected_masks = torch.stack(final_selected_masks_list, dim=0)
         else: 
-            padded_selected_feats = torch.zeros(0, self.patches_per_window, self.patch_feature_dim, device=all_patch_features_wsi.device, dtype=all_patch_features_wsi.dtype)
-            padded_selected_masks = torch.zeros(0, self.patches_per_window, device=all_patch_features_wsi.device, dtype=torch.bool)
+            # padded_selected_feats, padded_selected_masks = return_zeros_for_select() # 不能直接调用这个，因为它会返回 all_patch_features_wsi.device
+            dev = all_patch_features_wsi.device if all_patch_features_wsi is not None else torch.device('cpu') # Fallback device
+            dtype = all_patch_features_wsi.dtype if all_patch_features_wsi is not None else torch.float32 # Fallback dtype
+
+            padded_selected_feats = torch.zeros(0, self.patches_per_window, self.patch_feature_dim, device=dev, dtype=dtype)
+            padded_selected_masks = torch.zeros(0, self.patches_per_window, device=dev, dtype=torch.bool)
+
         
         num_padding_windows = self.num_selected_windows - padded_selected_feats.shape[0]
         if num_padding_windows > 0:
-            padding_f = torch.zeros(num_padding_windows, self.patches_per_window, self.patch_feature_dim, device=all_patch_features_wsi.device, dtype=all_patch_features_wsi.dtype)
-            padding_m = torch.zeros(num_padding_windows, self.patches_per_window, device=all_patch_features_wsi.device, dtype=torch.bool)
-            if padded_selected_feats.numel() > 0 : 
+            dev = padded_selected_feats.device # 使用已有张量的device和dtype
+            dtype = padded_selected_feats.dtype
+            if padded_selected_feats.numel() == 0: # 如果之前没有选出任何窗口
+                dev = all_patch_features_wsi.device
+                dtype = all_patch_features_wsi.dtype
+
+
+            padding_f = torch.zeros(num_padding_windows, self.patches_per_window, self.patch_feature_dim, device=dev, dtype=dtype)
+            padding_m = torch.zeros(num_padding_windows, self.patches_per_window, device=dev, dtype=torch.bool)
+            if padded_selected_feats.numel() > 0 :
                 padded_selected_feats = torch.cat([padded_selected_feats, padding_f], dim=0)
                 padded_selected_masks = torch.cat([padded_selected_masks, padding_m], dim=0)
-            else: 
+            else:
                 padded_selected_feats = padding_f
                 padded_selected_masks = padding_m
-        
+
         return padded_selected_feats, padded_selected_masks
 
-    def forward(self, image_patch_features_batch, patch_grid_indices_batch, text_feat_batch, grid_shapes_batch, original_patch_coordinates_batch=None, patch_mask_batch=None):
+    # 修改 forward 方法的签名，使 text_feat_batch 可选
+    def forward(self, image_patch_features_batch, patch_grid_indices_batch, grid_shapes_batch, text_feat_batch=None, original_patch_coordinates_batch=None, patch_mask_batch=None):
         def nan_return_val():
             return torch.full((image_patch_features_batch.shape[0], self.num_classes), float('nan'), device=image_patch_features_batch.device, dtype=image_patch_features_batch.dtype)
 
         if check_tensor_nan_inf(image_patch_features_batch, "image_patch_features_batch @ FORWARD_ENTRY"): return nan_return_val()
-        if check_tensor_nan_inf(text_feat_batch, "text_feat_batch @ FORWARD_ENTRY"): return nan_return_val()
-        
+        # if text_feat_batch is not None and check_tensor_nan_inf(text_feat_batch, "text_feat_batch @ FORWARD_ENTRY"): return nan_return_val() # 文本特征不再强制检查
+
         batch_size = image_patch_features_batch.shape[0]
         all_selected_windows_feats_b = []
         all_selected_windows_masks_b = []
@@ -313,15 +347,16 @@ class MultimodalTextGuidedMIL(nn.Module):
         for i in range(batch_size):
             current_patch_feats = image_patch_features_batch[i]
             current_grid_indices = patch_grid_indices_batch[i]
-            current_text_feat = text_feat_batch[i]
+            # current_text_feat = text_feat_batch[i] if text_feat_batch is not None else None # 文本特征不再使用
             current_grid_shape = grid_shapes_batch[i]
-            
+
             active_patch_feats = current_patch_feats
             active_grid_indices = current_grid_indices
-            
-            num_original_patches = current_patch_feats.shape[0]
+
+            # ... (active_patch_feats 和 active_grid_indices 的掩码逻辑保持不变) ...
             if patch_mask_batch is not None and patch_mask_batch[i] is not None:
                 current_patch_mask = patch_mask_batch[i]
+                num_original_patches = current_patch_feats.shape[0]
                 if current_patch_mask.shape[0] != num_original_patches:
                     len_to_use = min(current_patch_mask.shape[0], num_original_patches)
                     valid_patches_mask_i = current_patch_mask[:len_to_use].bool()
@@ -331,8 +366,32 @@ class MultimodalTextGuidedMIL(nn.Module):
                     valid_patches_mask_i = current_patch_mask.bool()
                     active_patch_feats = current_patch_feats[valid_patches_mask_i]
                     active_grid_indices = current_grid_indices[valid_patches_mask_i]
-            
+
             if check_tensor_nan_inf(active_patch_feats, f"active_patch_feats (batch item {i})"): return nan_return_val()
+
+            if active_patch_feats.shape[0] == 0:
+                s_feats = torch.zeros(self.num_selected_windows, self.patches_per_window, self.patch_feature_dim, device=current_patch_feats.device, dtype=current_patch_feats.dtype)
+                s_mask = torch.zeros(self.num_selected_windows, self.patches_per_window, device=current_patch_feats.device, dtype=torch.bool)
+            else:
+                # 调用修改后的窗口选择方法
+                s_feats, s_mask = self._select_windows_image_only(
+                    active_patch_feats, active_grid_indices, current_grid_shape, batch_item_idx_for_debug=i
+                )
+
+            if check_tensor_nan_inf(s_feats, f"s_feats from _select_windows_image_only (batch item {i})"): return nan_return_val()
+            all_selected_windows_feats_b.append(s_feats)
+            all_selected_windows_masks_b.append(s_mask)
+
+        selected_windows_feats = torch.stack(all_selected_windows_feats_b, dim=0)
+        if check_tensor_nan_inf(selected_windows_feats, "selected_windows_feats (after stack)"): return nan_return_val()
+
+        selected_windows_mask = torch.stack(all_selected_windows_masks_b, dim=0)
+
+        k_w = self.num_selected_windows
+        proc_windows_feats = selected_windows_feats.reshape(batch_size * k_w, self.patches_per_window, self.patch_feature_dim)
+        proc_windows_mask = selected_windows_mask.reshape(batch_size * k_w, self.patches_per_window)
+
+        if check_tensor_nan_inf(proc_windows_feats, "proc_windows_feats (INPUT to self_attn)"): return nan_return_val()
 
             if active_patch_feats.shape[0] == 0:
                 s_feats = torch.zeros(self.num_selected_windows, self.patches_per_window, self.patch_feature_dim, device=current_patch_feats.device, dtype=current_patch_feats.dtype)
@@ -415,18 +474,18 @@ class MultimodalTextGuidedMIL(nn.Module):
         ) 
         if check_tensor_nan_inf(final_image_repr, "final_image_repr (from inter_window_aggregator)"): return nan_return_val()
         
-        final_image_repr_seq = final_image_repr.unsqueeze(1)
-        text_feat_batch_seq = text_feat_batch.unsqueeze(1)
+        # final_image_repr_seq = final_image_repr.unsqueeze(1)
+        # text_feat_batch_seq = text_feat_batch.unsqueeze(1)
         
-        fused_representation = self.cross_attention(
-            query=final_image_repr_seq,
-            key_value=text_feat_batch_seq
-        ) 
-        if check_tensor_nan_inf(fused_representation, "fused_representation (from cross_attention)"): return nan_return_val()
+        # fused_representation = self.cross_attention(
+        #     query=final_image_repr_seq,
+        #     key_value=text_feat_batch_seq
+        # ) 
+        # if check_tensor_nan_inf(fused_representation, "fused_representation (from cross_attention)"): return nan_return_val()
         
-        fused_representation = fused_representation.squeeze(1)
+        # fused_representation = fused_representation.squeeze(1)
         
-        final_multimodal_feat = torch.cat([final_image_repr, fused_representation], dim=-1)
+        final_multimodal_feat = final_image_repr # 直接使用图像表示
         if check_tensor_nan_inf(final_multimodal_feat, "final_multimodal_feat (after cat)"): return nan_return_val()
         
         logits = self.classifier(final_multimodal_feat)
