@@ -91,13 +91,22 @@ def train_one_epoch(model, loader, criterion, optimizer, device, epoch_num, num_
         patch_mask_b = patch_mask_b.to(device)
 
         optimizer.zero_grad()
+        # logits = model(
+        #     image_patch_features_batch=image_patch_features_b,
+        #     patch_grid_indices_batch=patch_grid_indices_b,
+        #     text_feat_batch=text_feat_b, # 移除或设为None
+        #     grid_shapes_batch=grid_shapes_b,
+        #     patch_mask_batch=patch_mask_b
+        # )
+        # 修改为:
         logits = model(
             image_patch_features_batch=image_patch_features_b,
             patch_grid_indices_batch=patch_grid_indices_b,
-            text_feat_batch=text_feat_b,
             grid_shapes_batch=grid_shapes_b,
+            # text_feat_batch=text_feat_b, # 如果模型forward签名已修改为可选，则可省略
             patch_mask_batch=patch_mask_b
         )
+
         
         if torch.isnan(logits).any() or torch.isinf(logits).any():
             logger.error(f"Epoch {epoch_num+1}, Batch {batch_idx}: Logits 包含 NaN 或 Inf！跳过此批次。Logits: {logits}")
