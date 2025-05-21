@@ -177,9 +177,7 @@ class Attention(nn.Module):
 
         # return out, sim
         return self.to_out(out), sim
-    
 
-        
 if __name__ == '__main__':
     model = NASCSingle(input_dim=1536,
         num_class=4,

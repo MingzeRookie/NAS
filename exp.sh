@@ -30,7 +30,7 @@
 
 
 # wikg
-CUDA_VISIBLE_DEVICES=1 python train.py --config exp/encoder_com/steatosis/mean/ours/config.yaml 
+CUDA_VISIBLE_DEVICES=1 python train.py --config exp/encoder_com/steatosis/mean/nase/config.yaml 
 # CUDA_VISIBLE_DEVICES=0 python train.py --config exp/encoder_com/steatosis/wikg/conch/config.yaml 
 # CUDA_VISIBLE_DEVICES=0 python train.py --config exp/encoder_com/steatosis/wikg/uni/config.yaml &
 # CUDA_VISIBLE_DEVICES=1 python train.py --config exp/encoder_com/ball/wikg/uni/config.yaml &

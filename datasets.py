@@ -62,8 +62,8 @@ class NASHDataset(Dataset):
         for bag_idx, label in tqdm(self.bags_list):
             bag_dir = os.path.join(self.root, bag_idx + self.file_suffix)
             bag_feats = torch.load(bag_dir)
-            # bag_feats = bag_feats['bag_feats'].type(torch.float32)
-            bag_feats = torch.stack([bag_feats[i] for i in bag_feats],dim=0).type(torch.float32)
+            bag_feats = bag_feats['bag_feats'].type(torch.float32)
+            # bag_feats = torch.stack([bag_feats[i] for i in bag_feats],dim=0).type(torch.float32)
             # bag_feats = torch.tensor(bag_feats,dtype=torch.float32)
             bag_label = torch.tensor(label, dtype=torch.float32)
             self.bag_feats_list.append(bag_feats)

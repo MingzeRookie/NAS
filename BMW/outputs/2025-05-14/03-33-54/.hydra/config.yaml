@@ -1,0 +1,60 @@
+data:
+  train_manifest_csv_path: /remote-home/share/lisj/Workspace/SOTA_NAS/BMW/datasets/train_inflammation_labels.csv
+  val_manifest_csv_path: /remote-home/share/lisj/Workspace/SOTA_NAS/BMW/datasets/val_inflammation_labels.csv
+  image_feature_dir: /remote-home/share/lisj/Workspace/SOTA_NAS/datasets/core/MUSK-feature
+  text_feature_path: /remote-home/share/lisj/Workspace/SOTA_NAS/datasets/core/MUSK-feature/MUSK-text-feature/averaged_text_feature.pt
+  patch_size_pixels:
+  - 224
+  - 224
+  label_column_name: inflammation_label
+  wsi_id_column_name: slide_id
+model_params:
+  name: MultimodalTextGuidedMIL
+  patch_feature_dim: 1024
+  text_feature_dim: 1024
+  num_classes: 4
+  similarity_projection_dim: 256
+  window_params:
+    patch_rows: 3
+    patch_cols: 3
+    stride_rows: 3
+    stride_cols: 3
+    num_selected_windows: 5
+    pre_similarity_window_agg_type: mean
+    light_agg_D: 128
+    light_agg_dropout: 0.1
+  self_attn_heads: 4
+  self_attn_dropout: 0.1
+  window_mil_output_dim: 512
+  window_mil_D: 128
+  window_mil_dropout: 0.25
+  final_image_feature_dim: 512
+  inter_window_mil_D: 128
+  inter_window_mil_dropout: 0.25
+  cross_attn_heads: 4
+  cross_attn_dropout: 0.1
+  classifier_hidden_dim: 256
+  classifier_dropout: 0.25
+train_params:
+  optimizer: AdamW
+  learning_rate: 0.0001
+  weight_decay: 1.0e-05
+  batch_size: 8
+  num_epochs: 50
+  warmup_epochs: 5
+  scheduler: CosineAnnealingLR
+  loss_function: CrossEntropyLoss
+experiment_params:
+  experiment_name: bmw_multimodal_inflammation_v1
+  run_name: null
+  wandb_project: BMW-Multimodal-Project
+  wandb_entity: chengmz
+  wandb_watch_model: true
+  wandb_watch_log_level: all
+  wandb_watch_log_freq: 100
+  wandb_save_best_model: true
+  log_dir: ./logs
+  checkpoint_dir: ./checkpoints
+  num_workers: 4
+  seed: 42
+  gpu_id: 0
