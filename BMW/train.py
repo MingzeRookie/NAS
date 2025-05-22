@@ -348,7 +348,7 @@ def main(cfg: DictConfig):
     best_val_auc = 0.0
     output_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
     logger.info(f"实验输出将保存在: {output_dir}")
-
+    os.makedirs(output_dir, exist_ok=True)
     history_df = pd.DataFrame(columns=['epoch', 'train_loss', 'train_auc', 'train_f1', 
                                        'val_loss', 'val_auc', 'val_f1'])
     

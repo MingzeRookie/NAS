@@ -38,19 +38,25 @@ model_params:
   cross_attn_dropout: 0.1
   classifier_hidden_dim: 256
   classifier_dropout: 0.3
+  ablation_image_only: True  # Set to True for image-only experiment
+  ablation_no_window: False   # Set to True for no-window experiment
+  direct_cross_attention_embed_dim: 1024 # Example, can be same as patch_feature_dim or different
+  direct_final_mil_output_dim: 512    # Example
+  direct_final_mil_hidden_dim: 128    # Example
+  direct_final_mil_dropout: 0.25      # Example
 
 train_params:
   optimizer: "AdamW"
   learning_rate: 0.00002
   weight_decay: 0.0001
   batch_size: 8 # 根据您的 GPU 显存调整
-  num_epochs: 100
+  num_epochs: 50
   warmup_epochs: 5 # 如果使用 CosineAnnealingLR
   scheduler: "CosineAnnealingLR" # "CosineAnnealingLR", "ReduceLROnPlateau", or "None"
   loss_function: "CrossEntropyLoss"
 
 experiment_params:
-  experiment_name: "bmw_multimodal_inflammation_v1" # 或您的实验名
+  experiment_name: "bmw_ablation_image_only_inflammation_v1" # 或您的实验名
   run_name: null # 如果为 null，脚本会生成一个基于时间的名称，或者您可以指定一个
   wandb_project: "BMW-Multimodal-Project" # 您可以保持这个项目名，或修改为您希望的
   wandb_entity: "chengmz" # <--- 修改这里为您的 wandb 用户名
@@ -62,4 +68,4 @@ experiment_params:
   checkpoint_dir: "./checkpoints" 
   num_workers: 4
   seed: 42
-  gpu_id: 0
+  gpu_id: 1
