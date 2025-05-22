@@ -38,8 +38,8 @@ model_params:
   cross_attn_dropout: 0.1
   classifier_hidden_dim: 256
   classifier_dropout: 0.3
-  ablation_image_only: True  # Set to True for image-only experiment
-  ablation_no_window: False   # Set to True for no-window experiment
+  ablation_image_only: False  # Set to True for image-only experiment
+  ablation_no_window: True   # Set to True for no-window experiment
   direct_cross_attention_embed_dim: 1024 # Example, can be same as patch_feature_dim or different
   direct_final_mil_output_dim: 512    # Example
   direct_final_mil_hidden_dim: 128    # Example
@@ -68,4 +68,4 @@ experiment_params:
   checkpoint_dir: "./checkpoints" 
   num_workers: 4
   seed: 42
-  gpu_id: 1
+  gpu_id: 0
