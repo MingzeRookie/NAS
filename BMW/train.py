@@ -82,7 +82,6 @@ def train_one_epoch(model, loader, criterion, optimizer, device, epoch_num, num_
         (image_patch_features_b, patch_grid_indices_b, 
          text_feat_b, labels_b, grid_shapes_b,
          original_patch_coordinates_b, patch_mask_b) = batch_data
-
         image_patch_features_b = image_patch_features_b.to(device)
         patch_grid_indices_b = patch_grid_indices_b.to(device)
         text_feat_b = text_feat_b.to(device)
@@ -103,7 +102,8 @@ def train_one_epoch(model, loader, criterion, optimizer, device, epoch_num, num_
             image_patch_features_batch=image_patch_features_b,
             patch_grid_indices_batch=patch_grid_indices_b,
             grid_shapes_batch=grid_shapes_b,
-            # text_feat_batch=text_feat_b, # 如果模型forward签名已修改为可选，则可省略
+            text_feat_batch=text_feat_b,  # <--- 确保传递 text_feat_b
+            original_patch_coordinates_batch=original_patch_coordinates_b, # 也加上这个，以匹配模型签名
             patch_mask_batch=patch_mask_b
         )
 
@@ -196,6 +196,7 @@ def evaluate(model, loader, criterion, device, epoch_num, num_classes, log_to_wa
                 patch_grid_indices_batch=patch_grid_indices_b,
                 text_feat_batch=text_feat_b,
                 grid_shapes_batch=grid_shapes_b,
+                original_patch_coordinates_batch=original_patch_coordinates_b,
                 patch_mask_batch=patch_mask_b
             )
             if torch.isnan(logits).any() or torch.isinf(logits).any():

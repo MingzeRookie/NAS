@@ -50,7 +50,7 @@ train_params:
   learning_rate: 0.00002
   weight_decay: 0.0001
   batch_size: 8 # 根据您的 GPU 显存调整
-  num_epochs: 50
+  num_epochs: 100
   warmup_epochs: 5 # 如果使用 CosineAnnealingLR
   scheduler: "CosineAnnealingLR" # "CosineAnnealingLR", "ReduceLROnPlateau", or "None"
   loss_function: "CrossEntropyLoss"
