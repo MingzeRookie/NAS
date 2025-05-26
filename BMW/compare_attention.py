@@ -114,71 +114,141 @@ class MultimodalTextGuidedMIL(nn.Module):
         else: self.cross_attention = None; self.fused_feature_dim = self.final_image_feature_dim
         self.classifier = nn.Sequential(nn.Linear(self.fused_feature_dim, config.model_params.classifier_hidden_dim), nn.ReLU(), nn.Dropout(config.model_params.classifier_dropout), nn.Linear(config.model_params.classifier_hidden_dim, self.num_classes))
 
+# 在 MultimodalTextGuidedMIL 类中
     def _generate_candidate_spatial_windows(self, all_patch_features_wsi, all_patch_grid_indices_wsi, wsi_grid_shape, batch_item_idx_for_debug=None):
-        if self.ablation_no_window: return [], [], []
-        if all_patch_features_wsi is None or all_patch_features_wsi.numel() == 0: return [], [], []
-        max_r, max_c = wsi_grid_shape[0].item(), wsi_grid_shape[1].item(); candidate_windows_feats_list, candidate_windows_masks_list, candidate_windows_coords_list = [], [], []
-        if all_patch_grid_indices_wsi.numel() == 0: return [], [], []
-        try: coord_to_idx_map = {tuple(coord.tolist()): i for i, coord in enumerate(all_patch_grid_indices_wsi)}
-        except Exception: return [], [], []
-        eff_window_rows, eff_window_cols = min(self.window_patch_rows, max_r), min(self.window_patch_cols, max_c)
-        if eff_window_rows <= 0 or eff_window_cols <= 0: return [], [], []
+        if self.ablation_no_window: return [], [], [], [] # 返回四个空列表
+        if all_patch_features_wsi is None or all_patch_features_wsi.numel() == 0: return [], [], [], []
+        
+        max_r, max_c = wsi_grid_shape[0].item(), wsi_grid_shape[1].item()
+        candidate_windows_feats_list = []
+        candidate_windows_masks_list = []
+        candidate_windows_top_left_coords_list = [] # 存储窗口左上角网格坐标
+        candidate_windows_patch_indices_list = []   # ***【新增】*** 存储每个窗口包含的原始 patch 索引
+
+        if all_patch_grid_indices_wsi.numel() == 0: return [], [], [], []
+        try:
+            # 创建一个从 (行,列) 网格索引到原始 patch 列表索引的映射
+            coord_to_idx_map = {tuple(coord.tolist()): i for i, coord in enumerate(all_patch_grid_indices_wsi)}
+        except Exception: # 更通用的异常捕获
+            return [], [], [], []
+            
+        eff_window_rows = min(self.window_patch_rows, max_r)
+        eff_window_cols = min(self.window_patch_cols, max_c)
+
+        if eff_window_rows <= 0 or eff_window_cols <= 0: return [], [], [], []
+
         for r_start in range(0, max_r - eff_window_rows + 1, self.stride_rows):
             for c_start in range(0, max_c - eff_window_cols + 1, self.stride_cols):
-                current_window_patch_indices = []
-                for r_offset in range(eff_window_rows):
+                current_window_original_patch_indices = [] # 存储此窗口内的原始 patch 索引
+                
+                for r_offset in range(eff_window_rows): 
                     for c_offset in range(eff_window_cols):
                         abs_r, abs_c = r_start + r_offset, c_start + c_offset
-                        if (abs_r, abs_c) in coord_to_idx_map: current_window_patch_indices.append(coord_to_idx_map[(abs_r, abs_c)])
-                if len(current_window_patch_indices) > 0:
-                    window_feats = all_patch_features_wsi[current_window_patch_indices]; num_actual_patches = window_feats.shape[0]
-                    padded_window_feats = torch.zeros(self.patches_per_window, self.patch_feature_dim, device=all_patch_features_wsi.device, dtype=all_patch_features_wsi.dtype)
-                    window_mask = torch.zeros(self.patches_per_window, device=all_patch_features_wsi.device, dtype=torch.bool); num_to_fill = min(num_actual_patches, self.patches_per_window)
-                    if num_to_fill > 0: padded_window_feats[:num_to_fill] = window_feats[:num_to_fill]; window_mask[:num_to_fill] = True
-                    candidate_windows_feats_list.append(padded_window_feats); candidate_windows_masks_list.append(window_mask)
-                    candidate_windows_coords_list.append(torch.tensor([r_start, c_start], device=all_patch_features_wsi.device))
-        return candidate_windows_feats_list, candidate_windows_masks_list, candidate_windows_coords_list
+                        if (abs_r, abs_c) in coord_to_idx_map:
+                            current_window_original_patch_indices.append(coord_to_idx_map[(abs_r, abs_c)])
+                
+                if len(current_window_original_patch_indices) > 0:
+                    window_feats = all_patch_features_wsi[current_window_original_patch_indices]
+                    num_actual_patches = window_feats.shape[0]
+                    
+                    padded_window_feats = torch.zeros(self.patches_per_window, self.patch_feature_dim,
+                                                      device=all_patch_features_wsi.device, dtype=all_patch_features_wsi.dtype)
+                    window_mask = torch.zeros(self.patches_per_window, device=all_patch_features_wsi.device, dtype=torch.bool)
+                    
+                    num_to_fill = min(num_actual_patches, self.patches_per_window)
+                    if num_to_fill > 0: 
+                        padded_window_feats[:num_to_fill] = window_feats[:num_to_fill] # 使用实际提取到的 patch 特征
+                        window_mask[:num_to_fill] = True
+                        
+                    candidate_windows_feats_list.append(padded_window_feats)
+                    candidate_windows_masks_list.append(window_mask)
+                    candidate_windows_top_left_coords_list.append(torch.tensor([r_start, c_start], device=all_patch_features_wsi.device))
+                    candidate_windows_patch_indices_list.append(torch.tensor(current_window_original_patch_indices, device=all_patch_features_wsi.device, dtype=torch.long)) # ***【新增】***
+        
+        return candidate_windows_feats_list, candidate_windows_masks_list, candidate_windows_top_left_coords_list, candidate_windows_patch_indices_list
 
+# 在 MultimodalTextGuidedMIL 类中
     def _select_windows(self, all_patch_features_wsi, text_feat_wsi, all_patch_grid_indices_wsi, wsi_grid_shape, batch_item_idx_for_debug=None, return_debug_info=False):
-        debug_info = {}
+        debug_info = {} 
         def return_zeros_for_select(dev_ref, dtype_ref):
+            # ... (此辅助函数不变)
             dev = dev_ref.device if dev_ref is not None else torch.device('cpu'); dtype = dtype_ref.dtype if dtype_ref is not None else torch.float32
             feats = torch.zeros(self.num_selected_windows, self.patches_per_window, self.patch_feature_dim, device=dev, dtype=dtype)
             masks = torch.zeros(self.num_selected_windows, self.patches_per_window, device=dev, dtype=torch.bool)
             return feats, masks
+
         if all_patch_features_wsi is None or all_patch_features_wsi.numel() == 0: return return_zeros_for_select(all_patch_features_wsi, all_patch_features_wsi), debug_info
-        candidate_windows_feats_list, candidate_windows_masks_list, candidate_windows_coords_list = self._generate_candidate_spatial_windows(all_patch_features_wsi, all_patch_grid_indices_wsi, wsi_grid_shape, batch_item_idx_for_debug)
+        
+        # ***【修改】*** 接收新的返回
+        candidate_windows_feats_list, candidate_windows_masks_list, \
+        candidate_windows_top_left_coords_list, candidate_windows_patch_indices_list = \
+            self._generate_candidate_spatial_windows(all_patch_features_wsi, all_patch_grid_indices_wsi, wsi_grid_shape, batch_item_idx_for_debug)
+
         if not candidate_windows_feats_list: return return_zeros_for_select(all_patch_features_wsi, all_patch_features_wsi), debug_info
-        final_selected_feats_list, final_selected_masks_list, final_selected_coords_list = [], [], []
+        
+        final_selected_feats_list, final_selected_masks_list = [], []
+        # ***【新增】*** 存储被选中窗口的原始 patch 索引和窗口左上角坐标
+        final_selected_patch_indices_list = []
+        final_selected_window_top_left_coords_list = []
+
+
         num_candidates, num_to_select = len(candidate_windows_feats_list), min(self.num_selected_windows, len(candidate_windows_feats_list))
-        if self.ablation_image_only or text_feat_wsi is None:
+
+        if self.ablation_image_only or text_feat_wsi is None: # 随机选择
             if num_to_select > 0:
                 selected_indices = random.sample(range(num_candidates), num_to_select) if num_candidates > num_to_select else list(range(num_candidates))
-                for idx in selected_indices: final_selected_feats_list.append(candidate_windows_feats_list[idx]); final_selected_masks_list.append(candidate_windows_masks_list[idx]); final_selected_coords_list.append(candidate_windows_coords_list[idx])
-                if return_debug_info and final_selected_coords_list: debug_info['selected_window_coords'] = torch.stack(final_selected_coords_list)
-        else:
+                for idx in selected_indices: 
+                    final_selected_feats_list.append(candidate_windows_feats_list[idx])
+                    final_selected_masks_list.append(candidate_windows_masks_list[idx])
+                    final_selected_window_top_left_coords_list.append(candidate_windows_top_left_coords_list[idx]) # ***【新增】***
+                    final_selected_patch_indices_list.append(candidate_windows_patch_indices_list[idx]) # ***【新增】***
+                if return_debug_info: 
+                    if final_selected_window_top_left_coords_list:
+                        debug_info['selected_window_top_left_coords'] = torch.stack(final_selected_window_top_left_coords_list)
+                    debug_info['selected_windows_patch_indices'] = final_selected_patch_indices_list # 列表的列表
+        else: # 文本引导选择
             aggregated_candidate_reprs, valid_candidate_indices = [], []
             for i, window_feats in enumerate(candidate_windows_feats_list):
+                # ... (聚合逻辑不变)
                 if not candidate_windows_masks_list[i].any(): continue
                 if self.pre_similarity_window_agg_type == 'attention_light': agg_repr = self.light_window_aggregator(window_feats.unsqueeze(0), instance_mask=candidate_windows_masks_list[i].unsqueeze(0))[0]
                 else: agg_repr = self.light_window_aggregator(window_feats.unsqueeze(0), candidate_windows_masks_list[i].unsqueeze(0))
                 aggregated_candidate_reprs.append(agg_repr.squeeze(0)); valid_candidate_indices.append(i)
+
             if not aggregated_candidate_reprs: return return_zeros_for_select(all_patch_features_wsi, all_patch_features_wsi), debug_info
-            stacked_candidate_reprs = torch.stack(aggregated_candidate_reprs); proj_text_feat = self.text_proj_sim(text_feat_wsi); proj_candidate_reprs = self.patch_proj_sim(stacked_candidate_reprs)
+            
+            stacked_candidate_reprs = torch.stack(aggregated_candidate_reprs)
+            proj_text_feat = self.text_proj_sim(text_feat_wsi)
+            proj_candidate_reprs = self.patch_proj_sim(stacked_candidate_reprs)
             similarity_scores = F.cosine_similarity(proj_text_feat.unsqueeze(0), proj_candidate_reprs, dim=1)
+
             if return_debug_info: 
-                if valid_candidate_indices: debug_info['candidate_window_coords'] = torch.stack([candidate_windows_coords_list[i] for i in valid_candidate_indices])
+                if valid_candidate_indices:
+                    debug_info['candidate_window_top_left_coords'] = torch.stack([candidate_windows_top_left_coords_list[i] for i in valid_candidate_indices])
+                    debug_info['candidate_windows_patch_indices'] = [candidate_windows_patch_indices_list[i] for i in valid_candidate_indices] # 列表的列表
                 debug_info['similarity_scores'] = similarity_scores
+            
             num_to_select_topk = min(self.num_selected_windows, similarity_scores.shape[0])
             if num_to_select_topk > 0:
                 _, top_k_relative_indices = torch.topk(similarity_scores, k=num_to_select_topk, dim=0)
-                for idx in [valid_candidate_indices[i] for i in top_k_relative_indices.tolist()]: final_selected_feats_list.append(candidate_windows_feats_list[idx]); final_selected_masks_list.append(candidate_windows_masks_list[idx])
+                for original_idx_in_valid_candidates in top_k_relative_indices.tolist():
+                    absolute_idx_in_all_candidates = valid_candidate_indices[original_idx_in_valid_candidates]
+                    final_selected_feats_list.append(candidate_windows_feats_list[absolute_idx_in_all_candidates])
+                    final_selected_masks_list.append(candidate_windows_masks_list[absolute_idx_in_all_candidates])
+                    # 注意：如果文本引导也需要记录被选中的窗口的 patch 索引和坐标，可以在这里添加
+                    # final_selected_patch_indices_list.append(candidate_windows_patch_indices_list[absolute_idx_in_all_candidates])
+                    # final_selected_window_top_left_coords_list.append(candidate_windows_top_left_coords_list[absolute_idx_in_all_candidates])
+
+
+        # Padding (不变)
+        # ...
         padded_selected_feats = torch.stack(final_selected_feats_list, dim=0) if final_selected_feats_list else torch.zeros(0, self.patches_per_window, self.patch_feature_dim, device=all_patch_features_wsi.device, dtype=all_patch_features_wsi.dtype)
         padded_selected_masks = torch.stack(final_selected_masks_list, dim=0) if final_selected_masks_list else torch.zeros(0, self.patches_per_window, device=all_patch_features_wsi.device, dtype=torch.bool)
         if (num_padding := self.num_selected_windows - padded_selected_feats.shape[0]) > 0:
             padding_f = torch.zeros(num_padding, self.patches_per_window, self.patch_feature_dim, device=padded_selected_feats.device, dtype=padded_selected_feats.dtype)
             padding_m = torch.zeros(num_padding, self.patches_per_window, device=padded_selected_feats.device, dtype=torch.bool)
             padded_selected_feats = torch.cat([padded_selected_feats, padding_f], dim=0); padded_selected_masks = torch.cat([padded_selected_masks, padding_m], dim=0)
+        
         return padded_selected_feats, padded_selected_masks, debug_info
 
     def forward(self, image_patch_features_batch, patch_grid_indices_batch, grid_shapes_batch, text_feat_batch=None, original_patch_coordinates_batch=None, patch_mask_batch=None, return_debug_info=False):
@@ -206,7 +276,9 @@ class MultimodalTextGuidedMIL(nn.Module):
             aggregated_window_reprs = aggregated_window_reprs.view(batch_size, k_w, self.window_mil_output_dim)
             final_image_repr, _ = self.inter_window_aggregator(aggregated_window_reprs, instance_mask=selected_windows_mask.any(dim=2))
             if not self.ablation_image_only and self.cross_attention is not None:
-                fused_representation_valid = self.cross_attention(query=final_image_repr.unsqueeze(1), key_value=text_feat_batch.unsqueeze(1).unsqueeze(1)) # Assuming text_feat_batch has shape (B, D_text)
+                current_text_key_value = text_feat_batch.unsqueeze(1) # 形状变为 [batch_size, 1, text_feature_dim]
+
+                fused_representation_valid = self.cross_attention(query=final_image_repr.unsqueeze(1), key_value=current_text_key_value)
                 final_batch_representation = torch.cat([final_image_repr, fused_representation_valid.squeeze(1)], dim=-1)
             else: final_batch_representation = final_image_repr
         logits = self.classifier(final_batch_representation)
@@ -279,32 +351,56 @@ class WsiDatasetForAttention(Dataset):
                 'label': inflammation_label 
                }
 
+# --- 4. 可视化函数 (修改为 patch 级别) ---
+def visualize_patch_attention(ax, title, all_patch_coords_cpu, patch_scores_cpu, patch_size_const):
+    """
+    在 patch 坐标上可视化 patch 级别的注意力分数。
+    all_patch_coords_cpu: 所有 patch 的中心或左上角坐标 (N, 2)
+    patch_scores_cpu: 每个 patch 的注意力分数 (N,)
+    patch_size_const: 单个 patch 的边长 (用于绘制矩形)
+    """
+    if all_patch_coords_cpu.numel() == 0:
+        ax.set_title(title + " (No patches)")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        return
 
-# --- 4. 可视化函数 ---
-def visualize_attention(ax, title, patch_coords, window_size, debug_info):
-    if patch_coords.numel() > 0:
-        ax.scatter(patch_coords[:, 0], patch_coords[:, 1], c='lightgray', s=1, alpha=0.3)
-    
-    candidate_window_coords_exist = 'candidate_window_coords' in debug_info and debug_info['candidate_window_coords'] is not None and debug_info['candidate_window_coords'].numel() > 0
-    similarity_scores_exist = 'similarity_scores' in debug_info and debug_info['similarity_scores'] is not None and debug_info['similarity_scores'].numel() > 0
-    selected_window_coords_exist = 'selected_window_coords' in debug_info and debug_info['selected_window_coords'] is not None and debug_info['selected_window_coords'].numel() > 0
+    # 归一化分数以便于着色 (0到1之间)
+    norm_scores = patch_scores_cpu.clone()
+    if norm_scores.max() > norm_scores.min():
+        norm_scores = (norm_scores - norm_scores.min()) / (norm_scores.max() - norm_scores.min())
+    elif norm_scores.max() > 0 : # 如果所有值都一样且大于0，则都设为1
+        norm_scores[:] = 1.0
+    else: # 如果所有值都一样且为0 (或负数，理论上不应该)，则都设为0
+        norm_scores[:] = 0.0
 
-    if candidate_window_coords_exist and similarity_scores_exist:
-        coords, scores = debug_info['candidate_window_coords'].cpu().numpy(), debug_info['similarity_scores'].cpu().numpy()
-        if scores.size > 0: 
-             norm_scores = (scores - scores.min()) / (scores.max() - scores.min()) if scores.max() > scores.min() else np.zeros_like(scores)
-             for (r, c), score_val in zip(coords, norm_scores):
-                rect = plt.Rectangle((c * PATCH_SIZE, r * PATCH_SIZE), window_size[1] * PATCH_SIZE, window_size[0] * PATCH_SIZE, facecolor=plt.cm.viridis(score_val), alpha=0.6, edgecolor='blue', linewidth=0.5)
-                ax.add_patch(rect)
-    elif selected_window_coords_exist:
-        for r, c in debug_info['selected_window_coords'].cpu().numpy():
-            rect = plt.Rectangle((c * PATCH_SIZE, r * PATCH_SIZE), window_size[1] * PATCH_SIZE, window_size[0] * PATCH_SIZE, facecolor='red', alpha=0.5, edgecolor='red', linewidth=1)
-            ax.add_patch(rect)
-            
-    ax.set_title(title); ax.set_aspect('equal', adjustable='box'); ax.invert_yaxis()
-    if patch_coords.numel() > 0:
-        ax.set_xlim(patch_coords[:, 1].min() - PATCH_SIZE, patch_coords[:, 1].max() + PATCH_SIZE * (window_size[1] if window_size else 1))
-        ax.set_ylim(patch_coords[:, 0].max() + PATCH_SIZE * (window_size[0] if window_size else 1), patch_coords[:, 0].min() - PATCH_SIZE)
+    cmap = plt.cm.viridis
+
+    for i in range(all_patch_coords_cpu.shape[0]):
+        coords = all_patch_coords_cpu[i] # 当前 patch 的 (y, x) 或 (r, c) 坐标
+        score = norm_scores[i].item()
+        
+        # 假设 coords 是 patch 的左上角坐标
+        # 如果是中心点坐标, x_coord = coords[1] - patch_size_const / 2, y_coord = coords[0] - patch_size_const / 2
+        x_coord = coords[1] # 通常 coords 是 [row, col] 即 [y, x]
+        y_coord = coords[0] 
+        
+        rect = plt.Rectangle(
+            (x_coord, y_coord),             # 矩形左下角 (x,y)
+            patch_size_const,               # 宽度
+            patch_size_const,               # 高度
+            linewidth=0.1,                  # 可以设置一个非常细的边框
+            edgecolor='gray', alpha=0.8,      # 边框颜色和透明度
+            facecolor=cmap(score)         # 根据分数填充颜色
+        )
+        ax.add_patch(rect)
+
+    ax.set_title(title)
+    ax.set_aspect('equal', adjustable='box')
+    # 根据 patch 坐标范围设置轴限制，确保所有 patch 可见
+    ax.set_xlim(all_patch_coords_cpu[:, 1].min() - patch_size_const, all_patch_coords_cpu[:, 1].max() + patch_size_const)
+    ax.set_ylim(all_patch_coords_cpu[:, 0].max() + patch_size_const, all_patch_coords_cpu[:, 0].min() - patch_size_const) # Y轴反转
+    ax.invert_yaxis()
 
 
 # --- 5. 主逻辑 ---
@@ -402,20 +498,54 @@ def main():
         grid_shape = data['grid_shape'].unsqueeze(0).to(device)
         text_embeds = data['text_embeds'].unsqueeze(0).to(device) # 确保 text_embeds 有 batch 维度
         
+# 在 main 函数的循环中
+# ... (获取 data, slide_id, feats, grid_indices, grid_shape, text_embeds 之后)
         with torch.no_grad():
-            _, debug_info_text = model_text(feats, grid_indices, grid_shape, text_feat_batch=text_embeds, return_debug_info=True)
-            _, debug_info_no_text = model_no_text(feats, grid_indices, grid_shape, text_feat_batch=text_embeds, return_debug_info=True)
-
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10)); fig.suptitle(f'Window Selection Comparison for Slide ID: {slide_id}', fontsize=16)
-        window_size_rows = config_text.model_params.window_params.patch_rows
-        window_size_cols = config_text.model_params.window_params.patch_cols
+            _, debug_info_list_text = model_text(feats, grid_indices, grid_shape, text_feat_batch=text_embeds, return_debug_info=True)
+            _, debug_info_list_no_text = model_no_text(feats, grid_indices, grid_shape, text_feat_batch=text_embeds, return_debug_info=True)
         
-        visualize_attention(ax1, 'Text-Guided Selection (Similarity Scores)', data['coords'], (window_size_rows, window_size_cols), debug_info_text[0])
-        visualize_attention(ax2, 'Image-Only Selection (Random)', data['coords'], (window_size_rows, window_size_cols), debug_info_no_text[0])
-        
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95]); plt.savefig(os.path.join(output_dir, f'comparison_{slide_id}.png')); plt.close(fig)
+        debug_info_text = debug_info_list_text[0] # batch size is 1
+        debug_info_no_text = debug_info_list_no_text[0]
 
-    print(f"All visualizations saved to {output_dir}")
+        num_all_patches = data['wsi_feats'].shape[0]
+        patch_scores_text = torch.zeros(num_all_patches, device='cpu')
+        patch_scores_no_text = torch.zeros(num_all_patches, device='cpu')
+
+        # 处理文本引导模型的 patch 分数
+        if 'similarity_scores' in debug_info_text and 'candidate_windows_patch_indices' in debug_info_text:
+            candidate_patch_indices_list = debug_info_text['candidate_windows_patch_indices'] # list of tensors
+            similarity_scores = debug_info_text['similarity_scores'].cpu() # tensor
+            
+            for i_window, patch_indices_in_window_tensor in enumerate(candidate_patch_indices_list):
+                if i_window < len(similarity_scores): # 确保索引有效
+                    score_for_this_window = similarity_scores[i_window]
+                    patch_indices_in_window = patch_indices_in_window_tensor.cpu().tolist()
+                    for patch_idx in patch_indices_in_window:
+                        if patch_idx < num_all_patches:
+                             # 如果一个 patch 属于多个重叠窗口，可以选择最大/平均得分，这里简单覆盖
+                            patch_scores_text[patch_idx] = max(patch_scores_text[patch_idx], score_for_this_window)
+
+
+        # 处理无文本模型的 patch 分数 (高亮被选中的窗口内的patches)
+        if 'selected_windows_patch_indices' in debug_info_no_text:
+            selected_patch_indices_list = debug_info_no_text['selected_windows_patch_indices'] # list of tensors
+            for patch_indices_in_window_tensor in selected_patch_indices_list:
+                patch_indices_in_window = patch_indices_in_window_tensor.cpu().tolist()
+                for patch_idx in patch_indices_in_window:
+                    if patch_idx < num_all_patches:
+                        patch_scores_no_text[patch_idx] = 1.0 # 赋予一个高分
+
+        # d. 可视化 (传递 patch_scores 给 visualize_attention)
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
+        fig.suptitle(f'Patch-Level Attention for Slide ID: {slide_id}', fontsize=16)
+        
+        # visualize_attention 函数需要修改以接收 patch_scores
+        visualize_patch_attention(ax1, 'Text-Guided Attention', data['coords'].cpu(), patch_scores_text, PATCH_SIZE)
+        visualize_patch_attention(ax2, 'Image-Only (Selected Windows Patches)', data['coords'].cpu(), patch_scores_no_text, PATCH_SIZE)
+        
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        plt.savefig(os.path.join(output_dir, f'comparison_{slide_id}.png'))
+        plt.close(fig)
 
 if __name__ == '__main__':
     main()
