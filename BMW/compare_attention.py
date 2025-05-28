@@ -11,7 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import random
 import logging
-
+from PIL import Image
 # --- 0. 环境与路径配置 ---
 
 # 确保项目根目录在 sys.path 中
@@ -287,30 +287,36 @@ class MultimodalTextGuidedMIL(nn.Module):
 
 # --- 3. 适配后的数据加载器 ---
 class WsiDatasetForAttention(Dataset):
-    def __init__(self, data_dir, labels_df, text_features_path, patch_size, n_patches=4096, text_feature_dim=1024): # 添加 text_feature_dim
-        self.data_dir, self.labels_df, self.text_features_path = data_dir, labels_df, text_features_path
-        self.patch_size, self.n_patches = patch_size, n_patches
-        self.text_feature_dim = text_feature_dim # 存储文本特征维度
+    def __init__(self, data_dir, labels_df, text_features_path, 
+                 patch_source_base_dir, # 改为 patch 图像的顶级父目录，例如 /remote-home/share/lisj/Workspace/SOTA_NAS/datasets/core/patches/
+                 patch_size_on_wsi, # 这是您之前定义的 PATCH_SIZE，指 WSI 上的大小
+                 n_patches_to_sample=4096, 
+                 text_feature_dim=1024,
+                 # 新增参数，用于指定是在 train, test 还是其他子目录下寻找 patch 图像
+                 patch_subdir='train' # 默认为 'train'
+                 ):
+        self.data_dir = data_dir # 用于加载 .pt 特征文件
+        self.labels_df = labels_df
+        self.text_features_path = text_features_path
+        self.patch_source_base_dir = patch_source_base_dir # 例如 /remote-home/share/lisj/Workspace/SOTA_NAS/datasets/core/patches/
+        self.patch_size_on_wsi = patch_size_on_wsi # WSI 上的 patch 尺寸，用于显示
+        self.n_patches_to_sample = n_patches_to_sample
+        self.text_feature_dim = text_feature_dim
+        self.patch_subdir = patch_subdir # 例如 'train' 或 'test'
 
-        # 加载单一的平均文本特征
         if os.path.exists(self.text_features_path):
             self.averaged_text_feature = torch.load(self.text_features_path, map_location='cpu')
-            # 确保加载的是 tensor 并且进行类型和维度调整
             if not isinstance(self.averaged_text_feature, torch.Tensor):
                 raise TypeError(f"Expected text_features_path to contain a single tensor, but got {type(self.averaged_text_feature)}")
-            # 确保它是 float32 类型以匹配模型通常的输入类型，并 squeeze 掉多余的 batch 维度 (如果它是 [1, dim])
             self.averaged_text_feature = self.averaged_text_feature.float().squeeze()
-            
-            # 校验加载的特征维度是否与期望的维度一致
             if self.averaged_text_feature.ndim == 0 or self.averaged_text_feature.shape[0] != self.text_feature_dim:
                 raise ValueError(f"Loaded averaged text feature has shape {self.averaged_text_feature.shape}, "
                                  f"but expected a 1D tensor of size {self.text_feature_dim}.")
             print(f"Successfully loaded averaged text feature from {self.text_features_path} with shape {self.averaged_text_feature.shape}")
         else:
             print(f"Warning: Averaged text features file not found at {self.text_features_path}. Using zero vector.")
-            self.averaged_text_feature = torch.zeros(self.text_feature_dim) # 使用期望的维度
+            self.averaged_text_feature = torch.zeros(self.text_feature_dim)
 
-        # 确保 'ID' 列是字符串类型
         if 'ID' in self.labels_df.columns:
             self.labels_df['ID'] = self.labels_df['ID'].astype(str)
         else:
@@ -321,87 +327,159 @@ class WsiDatasetForAttention(Dataset):
     def __getitem__(self, index):
         row = self.labels_df.loc[index]
         slide_id = str(row['ID'])
-        # 对于所有样本，都使用同一个平均文本特征
         text_embeds_value = self.averaged_text_feature
-        wsi_data = torch.load(os.path.join(self.data_dir, f"{slide_id}.pt"), map_location='cpu')
-        wsi_feats, coords = wsi_data['bag_feats'], wsi_data['coords'] 
-        wsi_feats = wsi_feats.float()
-        if self.n_patches > 0 and len(wsi_feats) > self.n_patches:
-            indices = np.random.choice(len(wsi_feats), self.n_patches, replace=False)
-            wsi_feats, coords = wsi_feats[indices], coords[indices]
+
+        wsi_feature_file_path = os.path.join(self.data_dir, f"{slide_id}.pt") # 这是特征.pt文件，不是图像patch的.pt
+        try:
+            wsi_data = torch.load(wsi_feature_file_path, map_location='cpu')
+        except FileNotFoundError:
+            print(f"Error: Cannot find feature .pt file for slide_id {slide_id} at {wsi_feature_file_path}")
+            return {'slide_id': slide_id, 'wsi_feats': torch.empty(0, self.text_feature_dim), 
+                    'coords': torch.empty(0, 2), 'patch_images': np.array([]), 
+                    'grid_indices': torch.empty(0,2), 'grid_shape': torch.tensor([0,0]), 
+                    'text_embeds': text_embeds_value, 'label': 'N/A'}
+
+        wsi_feats = wsi_data['bag_feats'].float()
+        coords_all = wsi_data['coords'] # 这是该 slide 所有 patch 的坐标列表
         
+        num_original_patches = len(wsi_feats)
+        
+        # 根据原始坐标加载所有 patch 图像
+        loaded_patch_images_all = []
+        if self.patch_source_base_dir:
+            slide_patch_dir = os.path.join(self.patch_source_base_dir, self.patch_subdir, slide_id)
+            if not os.path.isdir(slide_patch_dir):
+                print(f"Warning: Patch directory for slide {slide_id} not found at {slide_patch_dir}. Cannot load patch images.")
+                patch_images_all = np.array([]) # 标记为无法加载
+            else:
+                for i in range(num_original_patches):
+                    # 从 coords_all 获取当前 patch 的坐标
+                    y_coord, x_coord = coords_all[i, 0].item(), coords_all[i, 1].item()
+                    patch_image_filename = f"{y_coord}_{x_coord}.png"
+                    patch_image_path = os.path.join(slide_patch_dir, patch_image_filename)
+                    
+                    try:
+                        img = Image.open(patch_image_path).convert('RGB')
+                        loaded_patch_images_all.append(np.array(img))
+                    except FileNotFoundError:
+                        # print(f"Warning: Patch image not found: {patch_image_path}. Using placeholder.")
+                        # 对于可视化，如果patch图像缺失，最好还是用一个占位符，比如纯色块
+                        # 这里我们先简单地用一个黑色占位符，尺寸需要和真实patch图像一致（如果知道的话）
+                        # 或者让可视化函数处理这种情况
+                        # 为了简单，我们假设patch图像的显示尺寸会由patch_size_on_wsi决定，所以这里先不创建占位图像，让列表长度不一致
+                        # 一个更好的方法是确保所有patch都有图像，或者可视化时能处理缺失
+                        pass # 跳过缺失的图像，会导致 loaded_patch_images_all 长度不一
+
+                if len(loaded_patch_images_all) == num_original_patches:
+                    patch_images_all = np.stack(loaded_patch_images_all)
+                elif len(loaded_patch_images_all) > 0: # 如果部分加载成功，只用加载成功的
+                     print(f"Warning: Loaded {len(loaded_patch_images_all)} images for {num_original_patches} patches for slide {slide_id}. Some patch images might be missing.")
+                     # 这种情况比较复杂，因为特征和坐标是全的，但图像是部分的。
+                     # 最简单粗暴的方式是，如果数量不匹配，就不使用图像叠加。
+                     patch_images_all = np.array([]) # 标记为不使用图像叠加
+                else:
+                    patch_images_all = np.array([])
+        else:
+            patch_images_all = np.array([])
+
+        # 进行采样 (如果需要)
+        sampled_wsi_feats = wsi_feats
+        sampled_coords = coords_all
+        sampled_patch_images = patch_images_all
+
+        if self.n_patches_to_sample > 0 and num_original_patches > self.n_patches_to_sample:
+            indices = np.random.choice(num_original_patches, self.n_patches_to_sample, replace=False)
+            sampled_wsi_feats = wsi_feats[indices]
+            sampled_coords = coords_all[indices]
+            if patch_images_all.ndim > 1 and len(patch_images_all) == num_original_patches:
+                sampled_patch_images = patch_images_all[indices]
+            elif len(patch_images_all) != len(sampled_wsi_feats) : # 如果图像数量在采样后不匹配，则不使用
+                 sampled_patch_images = np.array([])
+
+
+        # 后续处理使用采样后的数据
         grid_indices = torch.empty((0,2), dtype=torch.long)
-        grid_shape = torch.tensor([0,0], dtype=torch.long) # 默认值
-        if coords.numel() > 0 :
-            grid_indices = (coords / self.patch_size).round().long()
-            if grid_indices.numel() > 0:
-                 grid_shape = grid_indices.max(dim=0)[0] + 1
-            else: 
-                 grid_shape = torch.tensor([1,1], dtype=torch.long) 
-        else: 
-            grid_shape = torch.tensor([1,1], dtype=torch.long) 
+        grid_shape = torch.tensor([0,0], dtype=torch.long)
+        if sampled_coords.numel() > 0 :
+            # 注意：这里的 patch_size_on_wsi 是用于计算网格索引的，可能与patch图像的实际像素尺寸不同
+            grid_indices = (sampled_coords / self.patch_size_on_wsi).round().long() 
+            if grid_indices.numel() > 0: grid_shape = grid_indices.max(dim=0)[0] + 1
+            else: grid_shape = torch.tensor([1,1], dtype=torch.long) 
+        else: grid_shape = torch.tensor([1,1], dtype=torch.long) 
             
-        # 'inflammation' 列的值现在仅作为元数据返回，不再用于查找文本特征
         inflammation_label = str(row.get('inflammation', 'N/A'))
 
-
-        return {'slide_id': slide_id, 'wsi_feats': wsi_feats, 'coords': coords, 
+        return {'slide_id': slide_id, 'wsi_feats': sampled_wsi_feats, 'coords': sampled_coords, 
+                'patch_images': sampled_patch_images, 
                 'grid_indices': grid_indices, 'grid_shape': grid_shape, 
-                'text_embeds': text_embeds_value, # 直接使用平均特征，它已经是 [embedding_dim]
-                'label': inflammation_label 
-               }
+                'text_embeds': text_embeds_value, 'label': inflammation_label}
 
-# --- 4. 可视化函数 (修改为 patch 级别) ---
-def visualize_patch_attention(ax, title, all_patch_coords_cpu, patch_scores_cpu, patch_size_const):
-    """
-    在 patch 坐标上可视化 patch 级别的注意力分数。
-    all_patch_coords_cpu: 所有 patch 的中心或左上角坐标 (N, 2)
-    patch_scores_cpu: 每个 patch 的注意力分数 (N,)
-    patch_size_const: 单个 patch 的边长 (用于绘制矩形)
-    """
+# --- 4. 可视化函数 (不叠加，只画注意力色块) ---# --- 4. 可视化函数 (优化版 - 只画注意力色块，尝试消除“框”感) ---# --- 4. 可视化函数 (优化版 - 只画注意力色块，尝试消除“框”感) ---
+def visualize_patch_attention(ax, title, all_patch_coords_cpu, patch_scores_cpu, patch_images_np, patch_size_const):
+    # patch_images_np 参数保留以保持函数签名一致性，但在此版本中不使用它
     if all_patch_coords_cpu.numel() == 0:
         ax.set_title(title + " (No patches)")
         ax.set_xticks([])
         ax.set_yticks([])
         return
 
-    # 归一化分数以便于着色 (0到1之间)
-    norm_scores = patch_scores_cpu.clone()
-    if norm_scores.max() > norm_scores.min():
-        norm_scores = (norm_scores - norm_scores.min()) / (norm_scores.max() - norm_scores.min())
-    elif norm_scores.max() > 0 : # 如果所有值都一样且大于0，则都设为1
-        norm_scores[:] = 1.0
-    else: # 如果所有值都一样且为0 (或负数，理论上不应该)，则都设为0
-        norm_scores[:] = 0.0
+    norm_scores = patch_scores_cpu.clone().cpu() # 确保在CPU上
+    if norm_scores.numel() > 0:
+        min_score, max_score = norm_scores.min(), norm_scores.max()
+        if max_score > min_score:
+            norm_scores = (norm_scores - min_score) / (max_score - min_score)
+        elif max_score > 0 : # 如果所有值都一样且大于0，则都设为1
+            norm_scores[:] = 1.0
+        else: # 如果所有值都一样且为0 (或负数)，则都设为0
+            norm_scores[:] = 0.0
+    else: # 如果 patch_scores_cpu 为空
+        norm_scores = torch.tensor([])
 
-    cmap = plt.cm.viridis
 
+    cmap = plt.cm.jet # 使用 jet 色谱
+
+    # 确定边界，以便设置正确的绘图范围
+    if all_patch_coords_cpu.numel() > 0:
+        # 假设 coords 是 [y, x] (row, col)
+        min_x_coord = all_patch_coords_cpu[:, 1].min().item()
+        max_x_coord = all_patch_coords_cpu[:, 1].max().item() + patch_size_const
+        min_y_coord = all_patch_coords_cpu[:, 0].min().item()
+        max_y_coord = all_patch_coords_cpu[:, 0].max().item() + patch_size_const
+        # 稍微扩大一点边界，确保所有 patch 完整显示
+        ax.set_xlim(min_x_coord - patch_size_const * 0.05, max_x_coord + patch_size_const * 0.05) 
+        ax.set_ylim(max_y_coord + patch_size_const * 0.05, min_y_coord - patch_size_const * 0.05)
+    else: # 如果没有 patch 坐标，设置一个默认视图
+        ax.set_xlim(0, patch_size_const * 10) 
+        ax.set_ylim(patch_size_const * 10, 0)
+    
+    # 绘制代表每个 patch 的、根据注意力分数着色的矩形
     for i in range(all_patch_coords_cpu.shape[0]):
-        coords = all_patch_coords_cpu[i] # 当前 patch 的 (y, x) 或 (r, c) 坐标
-        score = norm_scores[i].item()
+        coords = all_patch_coords_cpu[i]
+        # 安全地获取分数，如果 norm_scores 为空或索引越界，则使用0
+        score = norm_scores[i].item() if i < len(norm_scores) and norm_scores.numel() > 0 else 0.0
         
-        # 假设 coords 是 patch 的左上角坐标
-        # 如果是中心点坐标, x_coord = coords[1] - patch_size_const / 2, y_coord = coords[0] - patch_size_const / 2
-        x_coord = coords[1] # 通常 coords 是 [row, col] 即 [y, x]
-        y_coord = coords[0] 
+        x_coord = coords[1].item() # Column index for x-coordinate
+        y_coord = coords[0].item() # Row index for y-coordinate
+
+        attention_color = cmap(score) # 获取颜色 (R, G, B, A_cmap)
         
         rect = plt.Rectangle(
-            (x_coord, y_coord),             # 矩形左下角 (x,y)
+            (x_coord, y_coord),             # 矩形左下角 (x,y) - Matplotlib 默认 (x,y) 是左下角
             patch_size_const,               # 宽度
             patch_size_const,               # 高度
-            linewidth=0.1,                  # 可以设置一个非常细的边框
-            edgecolor='gray', alpha=0.8,      # 边框颜色和透明度
-            facecolor=cmap(score)         # 根据分数填充颜色
+            linewidth=0,                    # 设置为0以避免 patch 间的缝隙
+            alpha=1.0,                      # 完全不透明
+            facecolor=attention_color[:3]   # 只取 RGB 颜色值
         )
         ax.add_patch(rect)
 
     ax.set_title(title)
     ax.set_aspect('equal', adjustable='box')
-    # 根据 patch 坐标范围设置轴限制，确保所有 patch 可见
-    ax.set_xlim(all_patch_coords_cpu[:, 1].min() - patch_size_const, all_patch_coords_cpu[:, 1].max() + patch_size_const)
-    ax.set_ylim(all_patch_coords_cpu[:, 0].max() + patch_size_const, all_patch_coords_cpu[:, 0].min() - patch_size_const) # Y轴反转
-    ax.invert_yaxis()
-
+    ax.invert_yaxis() # Y 轴向下，符合图像和数组索引的习惯
+    # 移除坐标轴刻度和标签，使图像更干净
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.axis('off') # 完全关闭坐标轴框架
 
 # --- 5. 主逻辑 ---
 def get_config(
@@ -477,17 +555,20 @@ def main():
     model_no_text.load_state_dict(checkpoint_no_text['model_state_dict'])
     model_no_text.to(device).eval()
     print("Models loaded.")
-
-    # ***【确保这一行存在且在 WsiDatasetForAttention 实例化之前】***
-    all_labels_df = pd.read_csv(split_path) 
+    patch_images_source_directory = "/remote-home/share/lisj/Workspace/SOTA_NAS/datasets/core/patches/" 
+    current_patch_subdir = 'train' 
 
     text_feat_dim_for_dataset = config_params_text.get("text_feature_dim", 1024)
+    all_labels_df = pd.read_csv(split_path)
     dataset = WsiDatasetForAttention(
-        data_dir,
-        all_labels_df, # 现在 all_labels_df 已经被定义了
-        text_features_path,
-        PATCH_SIZE,
-        text_feature_dim=text_feat_dim_for_dataset
+        data_dir=data_dir, # 这是 .pt 特征文件的目录
+        labels_df=all_labels_df,
+        text_features_path=text_features_path,
+        patch_source_base_dir=patch_images_source_directory, # <--- 新参数
+        patch_size_on_wsi=PATCH_SIZE, # 这是您之前定义的 PATCH_SIZE
+        n_patches_to_sample=num_images_to_test if num_images_to_test < 500 else 4096, # 如果测试图片少，就取测试图片数，否则取默认值
+        text_feature_dim=text_feat_dim_for_dataset,
+        patch_subdir=current_patch_subdir # <--- 新参数
     )
     print(f"Dataset loaded. Total images from CSV: {len(dataset)}. Will process first {num_images_to_test} images.")
 
@@ -540,9 +621,9 @@ def main():
         fig.suptitle(f'Patch-Level Attention for Slide ID: {slide_id}', fontsize=16)
         
         # visualize_attention 函数需要修改以接收 patch_scores
+        patch_images_for_plot = data.get('patch_images', np.array([])) # 安全获取
         visualize_patch_attention(ax1, 'Text-Guided Attention', data['coords'].cpu(), patch_scores_text, PATCH_SIZE)
         visualize_patch_attention(ax2, 'Image-Only (Selected Windows Patches)', data['coords'].cpu(), patch_scores_no_text, PATCH_SIZE)
-        
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         plt.savefig(os.path.join(output_dir, f'comparison_{slide_id}.png'))
         plt.close(fig)
