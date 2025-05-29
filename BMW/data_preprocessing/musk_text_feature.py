@@ -18,12 +18,12 @@ device = torch.device("cuda:1" if torch.cuda.is_available() and torch.cuda.devic
 model_config = "musk_large_patch16_384"
 local_ckpt = "/remote-home/share/lisj/Workspace/SOTA_NAS/encoder/musk/checkpoint/model.safetensors"
 tokenizer_path = "/remote-home/share/lisj/Workspace/SOTA_NAS/encoder/musk/MUSK-main/musk/models/tokenizer.spm"
-save_path = "/remote-home/share/lisj/Workspace/SOTA_NAS/datasets/core/MUSK-feature/MUSK-text-feature/text_feature.pt"
+save_path = "/remote-home/share/lisj/Workspace/SOTA_NAS/datasets/core/MUSK-feature/MUSK-text-feature/tissue_text_feature.pt"
 
 max_token_len = 100
 
 prompts = [
-    """A whole slide image of lobular inflammation in non-alcoholic steatohepatitis
+        """A whole slide image of lobular inflammation in non-alcoholic steatohepatitis
     at high resolution typically displays small clusters of inflammatory cells, 
     primarily lymphocytes, scattered irregularly throughout the hepatic lobules. 
     These infiltrates are not confined to portal areas but instead intersperse between hepatocytes, 

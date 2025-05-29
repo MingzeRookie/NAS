@@ -6,7 +6,7 @@ data:
   train_manifest_csv_path: "/remote-home/share/lisj/Workspace/SOTA_NAS/BMW/datasets/train_inflammation_labels.csv" 
   val_manifest_csv_path: "/remote-home/share/lisj/Workspace/SOTA_NAS/BMW/datasets/val_inflammation_labels.csv"
   image_feature_dir: "/remote-home/share/lisj/Workspace/SOTA_NAS/datasets/core/MUSK-feature"
-  text_feature_path: "/remote-home/share/lisj/Workspace/SOTA_NAS/datasets/core/MUSK-feature/MUSK-text-feature/averaged_text_feature.pt"
+  text_feature_path: "/remote-home/share/lisj/Workspace/SOTA_NAS/datasets/core/MUSK-feature/MUSK-text-feature/text_feature.pt"
   patch_size_pixels: [224, 224]
   label_column_name: "inflammation_label"  # 新CSV中的标签列名
   wsi_id_column_name: "slide_id"         # 新CSV中的WSI ID列名
