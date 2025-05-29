@@ -90,24 +90,18 @@ def train_one_epoch(model, loader, criterion, optimizer, device, epoch_num, num_
         patch_mask_b = patch_mask_b.to(device)
 
         optimizer.zero_grad()
-        # logits = model(
-        #     image_patch_features_batch=image_patch_features_b,
-        #     patch_grid_indices_batch=patch_grid_indices_b,
-        #     text_feat_batch=text_feat_b, # 移除或设为None
-        #     grid_shapes_batch=grid_shapes_b,
-        #     patch_mask_batch=patch_mask_b
-        # )
-        # 修改为:
-        logits = model(
-            image_patch_features_batch=image_patch_features_b,
-            patch_grid_indices_batch=patch_grid_indices_b,
-            grid_shapes_batch=grid_shapes_b,
-            text_feat_batch=text_feat_b,  # <--- 确保传递 text_feat_b
-            original_patch_coordinates_batch=original_patch_coordinates_b, # 也加上这个，以匹配模型签名
-            patch_mask_batch=patch_mask_b
-        )
+        if cfg.model_params.name == "GatedAttention":
+            logits = model(image_patch_features_b)
+        else:
+            logits = model(
+                image_patch_features_batch=image_patch_features_b,
+                patch_grid_indices_batch=patch_grid_indices_b,
+                grid_shapes_batch=grid_shapes_b,
+                text_feat_batch=text_feat_b,  # <--- 确保传递 text_feat_b
+                original_patch_coordinates_batch=original_patch_coordinates_b, # 也加上这个，以匹配模型签名
+                patch_mask_batch=patch_mask_b
+            )
 
-        
         if torch.isnan(logits).any() or torch.isinf(logits).any():
             logger.error(f"Epoch {epoch_num+1}, Batch {batch_idx}: Logits 包含 NaN 或 Inf！跳过此批次。Logits: {logits}")
             continue
@@ -318,13 +312,33 @@ def main(cfg: DictConfig):
     logger.info(f"验证数据集加载完成，样本数: {len(val_dataset)}")
 
     logger.info(f"正在实例化模型: {cfg.model_params.name}")
-    model_config_for_init = OmegaConf.create({
-        "patch_feature_dim": cfg.model_params.patch_feature_dim,
-        "text_feature_dim": cfg.model_params.text_feature_dim,
-        "num_classes": num_classes_from_config,
-        "model_params": cfg.model_params 
-    })
-    model = MultimodalTextGuidedMIL(config=model_config_for_init).to(device)
+
+    if cfg.model_params.name == "GatedAttention":
+        from models.gated_attention_mil import GatedAttention # 确保导入纯 nn.Module 版本
+        model = GatedAttention(
+            input_size=cfg.model_params.input_size,
+            output_class=cfg.model_params.output_class
+        ).to(device)
+    elif cfg.model_params.name == "MultimodalTextGuidedMIL": # 保留原来的逻辑
+        model_config_for_init = OmegaConf.create({
+            "patch_feature_dim": cfg.model_params.patch_feature_dim,
+            "text_feature_dim": cfg.model_params.text_feature_dim,
+            "num_classes": num_classes_from_config,
+            "model_params": cfg.model_params 
+        })
+        model = MultimodalTextGuidedMIL(config=model_config_for_init).to(device)
+        model_config_for_init = OmegaConf.create({
+            "patch_feature_dim": cfg.model_params.patch_feature_dim, # 你可能需要为GatedAttention也定义这个
+            "text_feature_dim": cfg.model_params.get("text_feature_dim", None), # GatedAttention可能不需要
+            "num_classes": cfg.model_params.output_class, # 注意参数名统一
+            "model_params": cfg.model_params # 传递整个模型参数块
+        })
+        # 假设 MultimodalTextGuidedMIL 能处理 config.model_params
+        from src.models.multimodal_text_guided_mil import MultimodalTextGuidedMIL
+        model = MultimodalTextGuidedMIL(config=model_config_for_init).to(device)
+
+    else:
+        raise ValueError(f"不支持的模型名称: {cfg.model_params.name}")
     logger.info("模型实例化完成。")
     
     # if cfg.experiment_params.get("wandb_watch_model", False): # 暂时禁用 watch
