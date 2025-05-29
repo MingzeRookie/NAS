@@ -3,7 +3,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import torch.optim as optim
-from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score
+from sklearn.metrics import (
+    roc_auc_score,
+    f1_score,
+    accuracy_score,
+    cohen_kappa_score,
+    recall_score,
+)
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import os
@@ -24,49 +30,37 @@ except ImportError as e:
     WsiMultimodalSpatialDataset = None
     MultimodalTextGuidedMIL = None
     multimodal_spatial_collate_fn = None
-
 logger = logging.getLogger(__name__)
 
 def get_metrics(y_true, y_pred_probs, y_pred_labels, num_classes):
-    """计算并返回分类指标"""
+    """返回 dict，包含：auc, f1, accuracy, precision, recall, kappa"""
+    y_true = np.array(y_true)
+    y_probs = np.array(y_pred_probs)
+    y_pred = np.array(y_pred_labels)
     metrics = {}
-    y_true_np = np.array(y_true)
-    y_pred_probs_np = np.array(y_pred_probs)
-    y_pred_labels_np = np.array(y_pred_labels)
 
-    if not y_true_np.size or not y_pred_probs_np.size or not y_pred_labels_np.size:
-        logger.warning("计算指标时发现空数组，将返回默认指标。")
-        return {'auc': 0.5, 'f1': 0.0, 'accuracy': 0.0, 'precision': 0.0, 'recall': 0.0}
+    # AUC
+    try:
+        if num_classes == 2:
+            p = y_probs if y_probs.ndim==1 else y_probs[:,1]
+            metrics['auc'] = roc_auc_score(y_true, p) if len(np.unique(y_true))>1 else 0.5
+        else:
+            metrics['auc'] = roc_auc_score(y_true, y_probs, multi_class='ovr', average='weighted') \
+                             if len(np.unique(y_true))>1 else 0.5
+    except:
+        metrics['auc'] = 0.5
 
+    # 其余指标
+    avg = 'binary' if num_classes==2 else 'weighted'
+    metrics['f1']       = f1_score(y_true, y_pred, average=avg, zero_division=0)
+    metrics['accuracy'] = accuracy_score(y_true, y_pred)
+    metrics['precision']= precision_score(y_true, y_pred, average=avg, zero_division=0)
+    metrics['recall']   = recall_score(y_true, y_pred, average=avg, zero_division=0)
+    try:
+        metrics['kappa']  = cohen_kappa_score(y_true, y_pred)
+    except:
+        metrics['kappa']  = 0.0
 
-    if num_classes == 2:
-        try:
-            probs_for_auc = y_pred_probs_np if y_pred_probs_np.ndim == 1 else y_pred_probs_np[:, 1]
-            if len(np.unique(y_true_np)) < 2: # 检查标签是否只有一个类别
-                 metrics['auc'] = 0.5 # 或者 np.nan，取决于您希望如何处理
-                 logger.warning("计算二分类AUC时只有一个类别存在于y_true中，AUC设为0.5。")
-            else:
-                metrics['auc'] = roc_auc_score(y_true_np, probs_for_auc)
-        except ValueError as e:
-            logger.warning(f"计算二分类AUC时出错: {e}. y_true unique: {np.unique(y_true_np)}. AUC设为0.5。")
-            metrics['auc'] = 0.5 
-        avg_method = 'binary'
-    else: 
-        try:
-            if len(np.unique(y_true_np)) < 2:
-                metrics['auc'] = 0.5
-                logger.warning("计算多分类AUC时只有一个类别存在于y_true中，AUC设为0.5。")
-            else:
-                metrics['auc'] = roc_auc_score(y_true_np, y_pred_probs_np, multi_class='ovr', average='weighted')
-        except ValueError as e:
-            logger.warning(f"计算多分类AUC时出错: {e}. y_true unique: {np.unique(y_true_np)}, y_pred_probs shape: {y_pred_probs_np.shape}. AUC设为0.5。")
-            metrics['auc'] = 0.5 
-        avg_method = 'weighted'
-        
-    metrics['f1'] = f1_score(y_true_np, y_pred_labels_np, average=avg_method, zero_division=0)
-    metrics['accuracy'] = accuracy_score(y_true_np, y_pred_labels_np)
-    metrics['precision'] = precision_score(y_true_np, y_pred_labels_np, average=avg_method, zero_division=0)
-    metrics['recall'] = recall_score(y_true_np, y_pred_labels_np, average=avg_method, zero_division=0)
     return metrics
 
 def train_one_epoch(model, loader, criterion, optimizer, device, epoch_num, num_epochs, num_classes, grad_clip_norm=None, log_to_wandb=False): # log_to_wandb 默认设为 False
@@ -157,7 +151,15 @@ def train_one_epoch(model, loader, criterion, optimizer, device, epoch_num, num_
     # if log_to_wandb:
     #     wandb.log(log_data_train)
 
-    logger.info(f"训练 Epoch {epoch_num+1} 平均损失: {avg_loss:.4f}, AUC: {epoch_metrics['auc']:.4f}, F1 (weighted): {epoch_metrics['f1']:.4f}")
+    logger.info(
+        f"Epoch {epoch_num+1}/{num_epochs} "
+        f"loss={avg_loss:.4f} "
+        f"auc={epoch_metrics['auc']:.4f} "
+        f"f1={epoch_metrics['f1']:.4f} "
+        f"acc={epoch_metrics['accuracy']:.4f} "
+        f"recall={epoch_metrics['recall']:.4f} "
+        f"kappa={epoch_metrics['kappa']:.4f}"
+    )
     return avg_loss, epoch_metrics
 
 def evaluate(model, loader, criterion, device, epoch_num, num_classes, log_to_wandb=False): # log_to_wandb 默认设为 False
@@ -235,7 +237,15 @@ def evaluate(model, loader, criterion, device, epoch_num, num_classes, log_to_wa
     # if log_to_wandb:
     #     wandb.log(log_data_val)
 
-    logger.info(f"评估 Epoch {epoch_num+1} 平均损失: {avg_loss:.4f}, AUC: {epoch_metrics['auc']:.4f}, F1 (weighted): {epoch_metrics['f1']:.4f}")
+    logger.info(
+        f"[Eval] Epoch {epoch_num+1}/{num_epochs} "
+        f"loss={avg_loss:.4f} "
+        f"auc={epoch_metrics['auc']:.4f} "
+        f"f1={epoch_metrics['f1']:.4f} "
+        f"acc={epoch_metrics['accuracy']:.4f} "
+        f"recall={epoch_metrics['recall']:.4f} "
+        f"kappa={epoch_metrics['kappa']:.4f}"
+    )
     return avg_loss, epoch_metrics
 
 @hydra.main(config_path="configs", config_name="config_bmw_multimodal_spatial_baseline", version_base=None)
@@ -340,8 +350,11 @@ def main(cfg: DictConfig):
     output_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
     logger.info(f"实验输出将保存在: {output_dir}")
 
-    history_df = pd.DataFrame(columns=['epoch', 'train_loss', 'train_auc', 'train_f1', 
-                                       'val_loss', 'val_auc', 'val_f1'])
+    history_df = pd.DataFrame(columns=[
+    'epoch',
+    'train_loss','train_auc','train_f1','train_accuracy','train_recall','train_kappa',
+    'val_loss','val_auc','val_f1','val_accuracy','val_recall','val_kappa'
+    ])
     
     grad_clip_norm_val = cfg.train_params.get("grad_clip_norm", None)
 
@@ -362,9 +375,21 @@ def main(cfg: DictConfig):
                 scheduler.step()
         
         epoch_data = {
-            'epoch': epoch + 1,
-            'train_loss': train_loss, 'train_auc': train_metrics['auc'], 'train_f1': train_metrics['f1'],
-            'val_loss': val_loss, 'val_auc': val_metrics['auc'], 'val_f1': val_metrics['f1']
+            'epoch': epoch+1,
+            # train
+            'train_loss':      train_loss,
+            'train_auc':       train_metrics['auc'],
+            'train_f1':        train_metrics['f1'],
+            'train_accuracy':  train_metrics['accuracy'],
+            'train_recall':    train_metrics['recall'],
+            'train_kappa':     train_metrics['kappa'],
+            # val
+            'val_loss':        val_loss,
+            'val_auc':         val_metrics['auc'],
+            'val_f1':          val_metrics['f1'],
+            'val_accuracy':    val_metrics['accuracy'],
+            'val_recall':      val_metrics['recall'],
+            'val_kappa':       val_metrics['kappa'],
         }
         history_df = pd.concat([history_df, pd.DataFrame([epoch_data])], ignore_index=True)
         history_df.to_csv(os.path.join(output_dir, "training_history.csv"), index=False)
