@@ -1,43 +1,44 @@
-log_dir='FOCUS-main/logs/' # 例如 FOCUS-main/logs/
-task='task_musk' # 与您在 main.py 中定义的 task 名称一致
+#!/bin/bash
+
+# 日志目录，假设脚本在 FOCUS-main 目录下运行
+log_dir='logs/' 
+# 确保日志目录存在 (如果脚本是从 FOCUS-main 目录外运行，请使用绝对路径或确保 FOCUS-main/logs 存在)
+mkdir -p $log_dir # 如果 musk.sh 和 logs/ 都在 FOCUS-main/ 下，这个相对路径是OK的
+
+task='task_musk' 
 model='FOCUS'
-feature='musk' # 反映您使用的是musk特征
+feature='musk' 
 device=4 # 您的GPU ID
 
 export CUDA_VISIBLE_DEVICES=$device
-exp=$model"/"$feature
-echo "Task: "$task", Model: "$exp", GPU No.:"$device
+# exp 变量主要用于结果目录的组织
+exp="${model}/${feature}" # 使用引号以防变量中包含特殊字符
+echo "Task: ${task}, Model: ${exp}, GPU No.: ${device}"
 
-# 假设您的主训练脚本在 FOCUS-main 目录下名为 main.py
+# 确保 main.py 是您的主训练脚本
+# 并确保所有路径都是正确的
+
 nohup python main.py \
     --seed 1 \
     --drop_out \
     --early_stopping \
     --lr 1e-4 \
     --bag_loss ce \
-    --task $task \
-    --results_dir 'results/'$model'/'$feature'/' \
-    --exp_code $task"_single_run" \
-    --model_type $model \
+    --task "${task}" \
+    --results_dir "results/${exp}/" \
+    --exp_code "${task}_single_run" \
+    --model_type "${model}" \
     --mode transformer \
     --log_data \
-    # 数据集路径
-    --train_csv "/remote-home/share/lisj/Workspace/SOTA_NAS/BMW/datasets/train_inflammation_labels.csv" \ # 替换为实际路径
-    --val_csv "/remote-home/share/lisj/Workspace/SOTA_NAS/BMW/datasets/val_inflammation_labels.csv" \   # 替换为实际路径
-    # --test_csv "/path/to/your/test_labels.csv" # 如果有单独测试集，取消注释并设置路径
-
-    # Musk 特征路径 (用于 features_l)
-    --data_folder_l "/remote-home/share/lisj/Workspace/SOTA_NAS/datasets/core/MUSK-feature" \ # 替换为实际路径
-    # --data_folder_s "" # 保持为空或不设置此参数，让 features_s 成为占位符
-
-    # 文本提示
-    --text_prompt_path "/remote-home/share/lisj/Workspace/SOTA_NAS/datasets/core/MUSK-feature/MUSK-text-feature/text_feature.pt" \ # 替换为您创建的文本提示文件路径 (在FOCUS-main下)
-
-    # FOCUS 模型特定参数
+    --train_csv "/remote-home/share/lisj/Workspace/SOTA_NAS/BMW/datasets/train_inflammation_labels.csv" \
+    --val_csv "/remote-home/share/lisj/Workspace/SOTA_NAS/BMW/datasets/val_inflammation_labels.csv" \
+    --data_folder_l "/remote-home/share/lisj/Workspace/SOTA_NAS/datasets/core/MUSK-feature" \
+    --max_context_length 128 \
+    --text_prompt_path "/remote-home/share/lisj/Workspace/SOTA_NAS/BMW/contrast_study/FOCUS-main/text_prompt/MUSK_text_prompts.csv" \
     --window_size 16 \
     --sim_threshold 0.85 \
     --feature_dim 1024 \
-    --max_context_length 128 \
-    # --prototype_number 16 # 如果 args.prototype_number 被 model_FOCUS 或其依赖使用，则保留
+    --prototype_number 16
+    > "${log_dir}${task}_${model}_${feature}_single_run.log" 2>&1 &
 
-    > $log_dir$task"_"$model"_"$feature"_single_run.log" 2>&1 &
+echo "FOCUS training started with task: ${task}. Log: ${log_dir}${task}_${model}_${feature}_single_run.log"

@@ -8,7 +8,8 @@ from datasets.dataset_generic import Generic_MIL_Dataset # 确保 datasets 文�
 import torch
 import pandas as pd
 import numpy as np
-
+import sys # <--- 添加这一行
+print("Raw command-line arguments:", sys.argv) # <--- 添加这一行
 device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Generic training settings
@@ -58,7 +59,7 @@ parser.add_argument('--val_csv', type=str, default=None, help='Path to the valid
 
 
 args = parser.parse_args()
-
+# print("Parsed args:", args) 
 # Load text prompts if path is provided (used by FOCUS)
 if args.text_prompt_path:
     try:
@@ -117,22 +118,9 @@ print('\nLoad Dataset')
 
 # Define n_classes and label_dict based on your specific task
 # This needs to be set based on args.task before Generic_MIL_Dataset is called
-if args.task == 'musk_inflammation': # Example task name, use the one in your .sh script
+if args.task == 'task_musk': # Example task name, use the one in your .sh script
     args.n_classes = 4 # For inflammation_level 0, 1, 2, 3
-    # IMPORTANT: Ensure your CSV 'inflammation_label' column uses these exact string keys if this dict is used.
-    # If your CSV already has integer labels 0,1,2,3, then a simpler dict like {0:0, 1:1, ...} or even no dict
-    # might be needed, depending on how Generic_MIL_Dataset handles it.
-    # The Generic_MIL_Dataset.df_prep converts string labels to int using this dict.
-    # If your CSV has '0', '1', '2', '3' as strings: label_dict = {'0':0, '1':1, '2':2, '3':3}
-    # If your CSV has 'level_0', 'level_1', ...:
-    specific_label_dict = {'inflammation_level_0':0, 'inflammation_level_1':1, 'inflammation_level_2':2, 'inflammation_level_3':3}
-    # For your CSV format "slide_id,inflammation_label" with labels like "3",
-    # you'll need a label_dict that maps these string numbers to integers if they are read as strings by pandas.
-    # Or, ensure pandas reads them as integers directly.
-    # If 'inflammation_label' column in CSV is already 0,1,2,3 (numeric):
-    # specific_label_dict = {idx:idx for idx in range(args.n_classes)}
-    # Let's assume your CSV 'inflammation_label' contains string numbers '0', '1', '2', '3'
-    specific_label_dict = {str(i): i for i in range(args.n_classes)}
+    specific_label_dict = {i: i for i in range(args.n_classes)}
 
 
 elif args.task == 'task_another_custom': # Example for another task
