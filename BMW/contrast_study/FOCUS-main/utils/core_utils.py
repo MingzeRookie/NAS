@@ -154,27 +154,16 @@ def train(datasets, cur, args):
     #     config.prototype_number = args.prototype_number
     #     model_dict = {'config': config, 'num_classes':args.n_classes}
     #     model = FOCUS(**model_dict)
-    elif args.model_type == 'FOCUS': # <--- 添加这个分支
+    elif args.model_type == 'FOCUS':
         print(f"Initializing FOCUS model with {args.n_classes} classes")
-
-        # 创建 FOCUS 模型所需的 config 对象
         focus_model_config = argparse.Namespace() 
 
-        # 从 args (来自命令行的参数) 填充 focus_model_config
         focus_model_config.window_size = args.window_size
         focus_model_config.sim_threshold = args.sim_threshold
+        focus_model_config.input_size = args.feature_dim # 从命令行参数获取
+        focus_model_config.max_context_length = args.max_context_length # 从命令行参数获取
+        focus_model_config.text_prompt = args.text_prompt # 已在 main.py 中加载
 
-        # 设置 musk 特征的维度 (对应 model_FOCUS.py 中的 self.L)
-        focus_model_config.input_size = args.feature_dim
-
-        focus_model_config.max_context_length = args.max_context_length
-
-        # args.text_prompt 应该已经在 main.py (FOCUS_train.py) 中从CSV加载并处理好了
-        focus_model_config.text_prompt = args.text_prompt
-
-        # 实例化 FOCUS 模型
-        # (确保 model_FOCUS.py 中的 FOCUS 类及其依赖项如 TextEncoder, PromptLearner, 
-        #  以及 CONCH 模型加载的路径和导入都正确无误)
         model = FOCUS(config=focus_model_config, num_classes=args.n_classes)
 
     else: # args.model_type == 'mil'
